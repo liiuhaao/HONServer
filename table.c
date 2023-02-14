@@ -64,7 +64,6 @@ int packet_nat(struct sockaddr_in *client_addr, char *buf, int in_or_out)
     else if (in_or_out == IN_TABLE)
     {
         record = table_inbound(ip_hdr->daddr, htons(*dest));
-
         if (record == NULL)
             return 0;
         ip_hdr->daddr = record->client_addr;
@@ -170,6 +169,7 @@ struct table_record *table_outbound(struct sockaddr_in *client_addr, __be32 sadd
     record->clinet_vpn_port = client_addr->sin_port;
 
     record->touch = time(NULL);
+    record->next = NULL;
 
     if (table)
     {
@@ -193,28 +193,18 @@ in_port_t get_fake_port()
 {
     uint16_t fake_port = 0;
     struct table_record *record;
-    struct table_record *before = NULL;
 
     /* Iterate over the possible fake ports */
     for (fake_port = MIN_FAKE_PORT; fake_port <= MAX_FAKE_PORT; fake_port++)
     {
         /* Check if the fake port is already in use */
         record = table;
-        while (record)
+        for (record = table; record; record = record->next)
         {
-            /* Remove obsolete records */
-            if (before && record->touch + RECORD_TIMEOUT < time(NULL))
-            {
-                before->next = record->next;
-                free(record);
-                record = before->next;
-            }
-            else if (record->fake_port == fake_port)
+            if (record->fake_port == fake_port)
             {
                 break;
             }
-            before = record;
-            record = record->next;
         }
         if (record == NULL)
             break;

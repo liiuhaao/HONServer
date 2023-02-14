@@ -83,8 +83,8 @@ int bind_udp(char *server_ip, int server_port)
 void setup_iptables()
 {
     run("sysctl -w net.ipv4.ip_forward=1");
-    run("iptables -t filter -A FORWARD -i tun0 -o eno1 -j ACCEPT");
-    run("iptables -t nat -A POSTROUTING -o eno1 -j MASQUERADE");
+    run("iptables -t filter -A FORWARD -i tun0 -o eth0 -j ACCEPT");
+    run("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE");
 }
 
 /*
@@ -92,8 +92,8 @@ void setup_iptables()
  */
 void cleanup_iptables()
 {
-    run("iptables -t filter -D FORWARD -i tun0 -o eno1 -j ACCEPT");
-    run("iptables -t nat -D POSTROUTING -o eno1 -j MASQUERADE");
+    run("iptables -t filter -D FORWARD -i tun0 -o eth0 -j ACCEPT");
+    run("iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE");
 }
 
 /*
