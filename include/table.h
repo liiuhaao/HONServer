@@ -34,18 +34,17 @@ struct nat_record
 
 struct dec_record
 {
-    int hash_code;
+    unsigned int hash_code;
 
-    int data_size;
-    int symbol_size;
+    unsigned int data_size;
+    unsigned int block_size;
 
-    int k;
-    int n;
-    int receive_num;
+    unsigned int data_num;
+    unsigned int block_num;
+    unsigned int receive_num;
 
-    int *indexes;
-
-    char **data;
+    unsigned char **data_blocks;
+    unsigned char *marks;
 
     time_t touch;
 

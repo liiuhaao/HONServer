@@ -178,18 +178,17 @@ struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16
     return record;
 }
 
-struct dec_record *dec_get(int hash_code, int data_size, int symbol_size, int k, int n)
+struct dec_record *dec_get(int hash_code, int data_size, int block_size, int data_num, int block_num)
 {
     struct dec_record *record = dec_table;
     while (record)
     {
         if (record->hash_code == hash_code &&
             record->data_size == data_size &&
-            record->symbol_size == symbol_size &&
-            record->k == k &&
-            record->n == n)
+            record->block_size == block_size &&
+            record->data_num == data_num &&
+            record->block_num == block_num)
         {
-            // printf("get dec record.\n");
             record->touch = time(NULL);
             return record;
         }
@@ -205,7 +204,6 @@ struct dec_record *dec_get(int hash_code, int data_size, int symbol_size, int k,
         record = record->next;
     }
 
-    // printf("new dec record.\n");
     /* Add new record */
     if ((record = (struct dec_record *)malloc(sizeof(struct dec_record))) == NULL)
     {
@@ -214,14 +212,20 @@ struct dec_record *dec_get(int hash_code, int data_size, int symbol_size, int k,
     }
     record->hash_code = hash_code;
     record->data_size = data_size;
-    record->symbol_size = symbol_size;
+    record->block_size = block_size;
 
-    record->k = k;
-    record->n = n;
+    record->data_num = data_num;
+    record->block_num = block_num;
     record->receive_num = 0;
 
-    record->indexes = (int *)calloc(n, sizeof(int));
-    record->data = (char **)calloc(n, sizeof(char *));
+    record->data_blocks = (unsigned char **)malloc(block_num * sizeof(unsigned char *));
+    for (int i = 0; i < record->block_num; i++)
+    {
+        record->data_blocks[i] = (unsigned char *)malloc(block_size * sizeof(unsigned char));
+    }
+
+    record->marks = (unsigned char *)malloc(block_num * sizeof(unsigned char));
+    memset(record->marks, 1, block_num);
 
     record->touch = time(NULL);
 
@@ -239,12 +243,12 @@ void dec_remove(struct dec_record *record)
     if (record->next)
         record->next->before = record->before;
 
-    free(record->indexes);
-    for (int i = 0; i < record->n; i++)
+    free(record->marks);
+    for (int i = 0; i < record->block_num; i++)
     {
-        free(record->data[i]);
+        free(record->data_blocks[i]);
     }
-    free(record->data);
+    free(record->data_blocks);
 
     free(record);
 
@@ -256,20 +260,12 @@ void dec_remove(struct dec_record *record)
 
 int dec_put(struct dec_record *record, int index, char *d)
 {
-    if (record->indexes[index])
+    if (!(record->marks[index]))
         return 0;
     record->receive_num++;
-    record->indexes[index] = 1;
-    record->data[index] = (char *)malloc((record->symbol_size) * sizeof(char));
-    memcpy(record->data[index], d, record->symbol_size);
-
-    // printf("[");
-    // for (int i = 0; i < record->n; i++)
-    // {
-    //     printf("%d,", record->indexes[i]);
-    // }
-    // printf("]\n");
-    return record->receive_num >= record->k;
+    record->marks[index] = 0;
+    memcpy(record->data_blocks[index], d, record->block_size);
+    return record->receive_num >= record->data_num;
 }
 
 /**

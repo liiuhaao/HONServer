@@ -145,6 +145,7 @@ int main(int argc, char *argv[])
 
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
+    fec_init();
 
     while (1)
     {
@@ -211,6 +212,7 @@ int main(int argc, char *argv[])
             //     perror("Error while sending to tun_fd!!!");
             //     signal_handler(0);
             // }
+            // continue;
 
             int hash_code = be32toh(*((int *)(udp_buf)));
             int data_size = be32toh(*((int *)(udp_buf + 4)));
@@ -223,33 +225,27 @@ int main(int argc, char *argv[])
 
             if (dec_put(dec, index, udp_buf + 24))
             {
-                for (int i = 0; i < dec->n; i++)
-                {
-                    if (!(dec->data[i]))
-                    {
-                        printf("null\n");
-                        continue;
-                    }
-                    for (int j = 0; j < dec->symbol_size; j++)
-                    {
-                        printf("%d%c", dec->data[i][j],j==dec->symbol_size-1?'\n':',');
-                    }
-                }
+                // for (int i = 0; i < dec->block_num; i++)
+                // {
+                //     printf("%d: ", dec->marks[i]);
+                //     for (int j = 0; j < dec->block_size; j++)
+                //     {
+                //         printf("%d%c", dec->data_blocks[i][j], j == dec->block_size - 1 ? '\n' : ',');
+                //     }
+                // }
 
-                if (rs_decode2(dec->k, dec->n, dec->data, dec->symbol_size))
+                reed_solomon *rs = reed_solomon_new(dec->data_num, dec->block_num - dec->data_num);
+                if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, dec->block_num, dec->block_size))
                 {
-                    printf("Decode Error\n");
+                    printf("Decode Error!!!");
                     dec_remove(dec);
-                    // signal_handler(0);
                     continue;
                 }
-
-                // printf("Decode Done!!!!\n");
 
                 char *buf = (char *)malloc(k * symbol_size * sizeof(char));
                 for (int i = 0; i < k; i++)
                 {
-                    memcpy(buf + i * symbol_size, dec->data[i], symbol_size);
+                    memcpy(buf + i * symbol_size, dec->data_blocks[i], symbol_size);
                 }
                 int pos = 0;
                 while (pos < data_size)
@@ -257,17 +253,15 @@ int main(int argc, char *argv[])
                     int len = packet_nat(&client_addr, buf + pos, OUT_NAT);
                     if (len <= 0)
                     {
-                        printf("\nlen0\nlen0\n");
+                        perror("Error: packet total_len=0!!!");
+                        dec_remove(dec);
                         break;
-                        // signal_handler(0);
                     }
                     printf("pos=%d Send Packet len=%d\n", pos, len);
                     int write_bytes = write(tun_fd, buf + pos, len);
                     if (write_bytes < 0)
                     {
                         perror("Error while sending to tun_fd!!!");
-                        break;
-                        // signal_handler(0);
                     }
                     pos += len;
                 }
