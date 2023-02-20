@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#include <../lib/rs.h>
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) > (b)) ? (b) : (a))

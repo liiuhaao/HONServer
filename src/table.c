@@ -1,6 +1,5 @@
 #include "table.h"
 #include "server.h"
-#include <stdio.h>
 
 char *addr2str(__be32 addr)
 {
@@ -52,18 +51,19 @@ int packet_nat(struct sockaddr_in *client_addr, char *buf, int in_or_out)
     {
         return 0;
     }
+    // printf("source=%s:%d, dest=%s:%d\n", addr2str(ip_hdr->saddr), *source, addr2str(ip_hdr->daddr), *dest);
 
-    /* Look up table and translate address*/
-    struct table_record *record = NULL;
-    if (in_or_out == OUT_TABLE)
+    /* Look up nat_table and translate address*/
+    struct nat_record *record = NULL;
+    if (in_or_out == OUT_NAT)
     {
-        record = table_outbound(client_addr, ip_hdr->saddr, htons(*source));
+        record = nat_out(client_addr, ip_hdr->saddr, htons(*source));
         ip_hdr->saddr = record->fake_addr;
         *source = ntohs(record->fake_port);
     }
-    else if (in_or_out == IN_TABLE)
+    else if (in_or_out == IN_NAT)
     {
-        record = table_inbound(ip_hdr->daddr, htons(*dest));
+        record = nat_in(ip_hdr->daddr, htons(*dest));
         if (record == NULL)
             return 0;
         ip_hdr->daddr = record->client_addr;
@@ -88,19 +88,19 @@ int packet_nat(struct sockaddr_in *client_addr, char *buf, int in_or_out)
     }
     ip_hdr->check = 0;
     ip_hdr->check = get_ip_icmp_check(ip_hdr, sizeof(struct iphdr));
-    return 1;
+    return ntohs(ip_hdr->tot_len);
 }
 
 /**
- * Searches for an record in the table with matching fake destination IP and port
+ * Searches for an record in the nat_table with matching fake destination IP and port
  *
  * @param fake_daddr Fake destination IP
  * @param fake_dest Fake destination port
  * @return A pointer to the matching record if found, otherwise returns NULL
  */
-struct table_record *table_inbound(__be32 fake_daddr, __be16 fake_dest)
+struct nat_record *nat_in(__be32 fake_daddr, __be16 fake_dest)
 {
-    struct table_record *record = table;
+    struct nat_record *record = nat_table;
     while (record)
     {
         if (record->fake_addr == fake_daddr &&
@@ -116,19 +116,19 @@ struct table_record *table_inbound(__be32 fake_daddr, __be16 fake_dest)
 }
 
 /**
- * Searches for an record in the table with matching fake destination IP and port
+ * Searches for an record in the nat_table with matching fake destination IP and port
  *
  * @param client_addr Client address information
  * @param saddr Source IP address
  * @param source Source port
  * @return A pointer to the matching or newly created record.
  */
-struct table_record *table_outbound(struct sockaddr_in *client_addr, __be32 saddr, __be16 source)
+struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16 source)
 {
 
-    /* Look up table */
-    struct table_record *record = table;
-    struct table_record *before = NULL;
+    /* Look up nat_table */
+    struct nat_record *record = nat_table;
+    struct nat_record *before = NULL;
     while (record)
     {
         if (record->client_addr == saddr &&
@@ -141,11 +141,13 @@ struct table_record *table_outbound(struct sockaddr_in *client_addr, __be32 sadd
         }
 
         /* Obsolete record */
-        if (before && record->touch + RECORD_TIMEOUT < time(NULL))
+        if (record->touch + RECORD_TIMEOUT < time(NULL))
         {
-            before->next = record->next;
-            free(record);
-            record = before->next;
+            struct nat_record *tmp = record;
+            if (before)
+                before->next = record->next;
+            record = record->next;
+            free(tmp);
             continue;
         }
 
@@ -154,9 +156,9 @@ struct table_record *table_outbound(struct sockaddr_in *client_addr, __be32 sadd
     }
 
     /* Add new record */
-    if ((record = (struct table_record *)malloc(sizeof(struct table_record))) == NULL)
+    if ((record = (struct nat_record *)malloc(sizeof(struct nat_record))) == NULL)
     {
-        perror("Unable to allocate a new record");
+        perror("Unable to allocate a new nat record");
         return NULL;
     }
     record->client_addr = saddr;
@@ -169,19 +171,105 @@ struct table_record *table_outbound(struct sockaddr_in *client_addr, __be32 sadd
     record->clinet_vpn_port = client_addr->sin_port;
 
     record->touch = time(NULL);
-    record->next = NULL;
 
-    if (table)
-    {
-        record->next = table;
-        table = record;
-    }
-    else
-    {
-        table = record;
-    }
+    record->next = nat_table ? nat_table : NULL;
+    nat_table = record;
 
     return record;
+}
+
+struct dec_record *dec_get(int hash_code, int data_size, int symbol_size, int k, int n)
+{
+    struct dec_record *record = dec_table;
+    while (record)
+    {
+        if (record->hash_code == hash_code &&
+            record->data_size == data_size &&
+            record->symbol_size == symbol_size &&
+            record->k == k &&
+            record->n == n)
+        {
+            // printf("get dec record.\n");
+            record->touch = time(NULL);
+            return record;
+        }
+
+        /* Obsolete record */
+        if (record->touch + RECORD_TIMEOUT < time(NULL))
+        {
+            struct dec_record *tmp = record;
+            record = record->next;
+            dec_remove(tmp);
+            continue;
+        }
+        record = record->next;
+    }
+
+    // printf("new dec record.\n");
+    /* Add new record */
+    if ((record = (struct dec_record *)malloc(sizeof(struct dec_record))) == NULL)
+    {
+        perror("Unable to allocate a new dec record");
+        return NULL;
+    }
+    record->hash_code = hash_code;
+    record->data_size = data_size;
+    record->symbol_size = symbol_size;
+
+    record->k = k;
+    record->n = n;
+    record->receive_num = 0;
+
+    record->indexes = (int *)calloc(n, sizeof(int));
+    record->data = (char **)calloc(n, sizeof(char *));
+
+    record->touch = time(NULL);
+
+    record->next = dec_table ? dec_table : NULL;
+    record->before = NULL;
+    dec_table = record;
+
+    return record;
+}
+
+void dec_remove(struct dec_record *record)
+{
+    if (record->before)
+        record->before->next = record->next;
+    if (record->next)
+        record->next->before = record->before;
+
+    free(record->indexes);
+    for (int i = 0; i < record->n; i++)
+    {
+        free(record->data[i]);
+    }
+    free(record->data);
+
+    free(record);
+
+    if (record == dec_table)
+    {
+        dec_table = NULL;
+    }
+}
+
+int dec_put(struct dec_record *record, int index, char *d)
+{
+    if (record->indexes[index])
+        return 0;
+    record->receive_num++;
+    record->indexes[index] = 1;
+    record->data[index] = (char *)malloc((record->symbol_size) * sizeof(char));
+    memcpy(record->data[index], d, record->symbol_size);
+
+    // printf("[");
+    // for (int i = 0; i < record->n; i++)
+    // {
+    //     printf("%d,", record->indexes[i]);
+    // }
+    // printf("]\n");
+    return record->receive_num >= record->k;
 }
 
 /**
@@ -189,17 +277,17 @@ struct table_record *table_outbound(struct sockaddr_in *client_addr, __be32 sadd
  *
  * @return A new unused fake port (or 0 if not found)
  */
-in_port_t get_fake_port()
+uint16_t get_fake_port()
 {
     uint16_t fake_port = 0;
-    struct table_record *record;
+    struct nat_record *record;
 
     /* Iterate over the possible fake ports */
     for (fake_port = MIN_FAKE_PORT; fake_port <= MAX_FAKE_PORT; fake_port++)
     {
         /* Check if the fake port is already in use */
-        record = table;
-        for (record = table; record; record = record->next)
+        record = nat_table;
+        for (record = nat_table; record; record = record->next)
         {
             if (record->fake_port == fake_port)
             {

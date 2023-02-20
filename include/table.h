@@ -13,10 +13,10 @@
 #define MAX_FAKE_PORT 65535
 #define RECORD_TIMEOUT 60 /* in seconds */
 
-#define IN_TABLE 1
-#define OUT_TABLE 0
+#define IN_NAT 1
+#define OUT_NAT 0
 
-struct table_record
+struct nat_record
 {
     __be32 client_addr;
     __be16 client_port;
@@ -29,8 +29,29 @@ struct table_record
 
     time_t touch;
 
-    struct table_record *next;
-} *table;
+    struct nat_record *next;
+} *nat_table;
+
+struct dec_record
+{
+    int hash_code;
+
+    int data_size;
+    int symbol_size;
+
+    int k;
+    int n;
+    int receive_num;
+
+    int *indexes;
+
+    char **data;
+
+    time_t touch;
+
+    struct dec_record *before;
+    struct dec_record *next;
+} *dec_table;
 
 struct pseudohdr
 {
@@ -49,9 +70,15 @@ union protohdr
 
 int packet_nat(struct sockaddr_in *client_addr, char *buf, int in_or_out);
 
-struct table_record *table_inbound(__be32 fake_saddr, __be16 fake_source);
+struct nat_record *nat_in(__be32 fake_saddr, __be16 fake_source);
 
-struct table_record *table_outbound(struct sockaddr_in *client_addr, __be32 saddr, __be16 source);
+struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16 source);
+
+struct dec_record *dec_get(int hash_code, int data_size, int symbol_size, int k, int n);
+
+void dec_remove(struct dec_record *record);
+
+int dec_put(struct dec_record *record, int index, char *d);
 
 in_port_t get_fake_port();
 

@@ -19,7 +19,7 @@ int allocate_tun(char *tun_name, char *tun_ip, int mtu)
         exit(1);
     }
 
-    // Sets the specified information to the TUN interface 
+    // Sets the specified information to the TUN interface
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
 
@@ -116,15 +116,15 @@ void run(char *cmd)
  */
 void signal_handler(int sig)
 {
-    cleanup_iptables();
     printf("\n");
-    struct table_record *next;
-    while (table)
+    cleanup_iptables();
+    struct nat_record *next;
+    while (nat_table)
     {
         // printf("I am free!!!\n");
-        next = table->next;
-        free(table);
-        table = next;
+        next = nat_table->next;
+        free(nat_table);
+        nat_table = next;
     }
     printf("Bye!!!\n");
     exit(0);
@@ -172,12 +172,12 @@ int main(int argc, char *argv[])
             }
             // printf("TUN %d recieved %d bytes\n", tun_fd, read_bytes);
 
-            if (packet_nat(&client_addr, tun_buf, IN_TABLE))
+            if (packet_nat(&client_addr, tun_buf, IN_NAT))
             {
                 // TODO: Encode
                 // TODO: Choose udp_fd
                 int write_bytes = sendto(udp_fd, tun_buf, read_bytes, 0, (const struct sockaddr *)&client_addr, client_addr_len);
-                printf("Send %d bytes to %s:%i\n", write_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+                printf("\nSend %d bytes to %s:%i\n", write_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
                 if (write_bytes < 0)
                 {
                     perror("Error while sendding to udp_fd!!!");
@@ -197,25 +197,85 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("Receive %d bytes from %s:%i\n", read_bytes,
-                   inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+            printf("\nReceive %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
-            // TODO: Decode
-            // TODO: Aggregate
-            if (packet_nat(&client_addr, udp_buf, OUT_TABLE))
+            // int len = packet_nat(&client_addr, udp_buf, OUT_NAT);
+            // if (len <= 0)
+            // {
+            //     perror("totallen<=0");
+            //     signal_handler(0);
+            // }
+            // int write_bytes = write(tun_fd, udp_buf, read_bytes);
+            // if (write_bytes < 0)
+            // {
+            //     perror("Error while sending to tun_fd!!!");
+            //     signal_handler(0);
+            // }
+
+            int hash_code = be32toh(*((int *)(udp_buf)));
+            int data_size = be32toh(*((int *)(udp_buf + 4)));
+            int symbol_size = be32toh(*((int *)(udp_buf + 8)));
+            int k = be32toh(*((int *)(udp_buf + 12)));
+            int n = be32toh(*((int *)(udp_buf + 16)));
+            int index = be32toh(*((int *)(udp_buf + 20)));
+            printf("hash_code=%d, data_size=%d, symbol_size=%d, k=%d, n=%d, index=%d\n", hash_code, data_size, symbol_size, k, n, index);
+            struct dec_record *dec = dec_get(hash_code, data_size, symbol_size, k, n);
+
+            if (dec_put(dec, index, udp_buf + 24))
             {
-                int write_bytes = write(tun_fd, udp_buf, read_bytes);
-                if (write_bytes < 0)
+                for (int i = 0; i < dec->n; i++)
                 {
-                    perror("Error while sending to tun_fd!!!");
-                    break;
+                    if (!(dec->data[i]))
+                    {
+                        printf("null\n");
+                        continue;
+                    }
+                    for (int j = 0; j < dec->symbol_size; j++)
+                    {
+                        printf("%d%c", dec->data[i][j],j==dec->symbol_size-1?'\n':',');
+                    }
                 }
+
+                if (rs_decode2(dec->k, dec->n, dec->data, dec->symbol_size))
+                {
+                    printf("Decode Error\n");
+                    dec_remove(dec);
+                    // signal_handler(0);
+                    continue;
+                }
+
+                // printf("Decode Done!!!!\n");
+
+                char *buf = (char *)malloc(k * symbol_size * sizeof(char));
+                for (int i = 0; i < k; i++)
+                {
+                    memcpy(buf + i * symbol_size, dec->data[i], symbol_size);
+                }
+                int pos = 0;
+                while (pos < data_size)
+                {
+                    int len = packet_nat(&client_addr, buf + pos, OUT_NAT);
+                    if (len <= 0)
+                    {
+                        printf("\nlen0\nlen0\n");
+                        break;
+                        // signal_handler(0);
+                    }
+                    printf("pos=%d Send Packet len=%d\n", pos, len);
+                    int write_bytes = write(tun_fd, buf + pos, len);
+                    if (write_bytes < 0)
+                    {
+                        perror("Error while sending to tun_fd!!!");
+                        break;
+                        // signal_handler(0);
+                    }
+                    pos += len;
+                }
+                dec_remove(dec);
             }
         }
     }
 
-    close(tun_fd);
-    close(udp_fd);
-
+    signal_handler(0);
     return 0;
 }
