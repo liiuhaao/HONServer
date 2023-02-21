@@ -46,9 +46,10 @@ struct dec_record
     unsigned char **data_blocks;
     unsigned char *marks;
 
+    pthread_t tid;
+
     time_t touch;
 
-    struct dec_record *before;
     struct dec_record *next;
 } *dec_table;
 
@@ -75,9 +76,9 @@ struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16
 
 struct dec_record *dec_get(int hash_code, int data_size, int symbol_size, int k, int n);
 
-void dec_remove(struct dec_record *record);
+void free_dec(struct dec_record *record);
 
-int dec_put(struct dec_record *record, int index, char *d);
+int dec_put(struct dec_record *record, int index, unsigned char *block);
 
 in_port_t get_fake_port();
 

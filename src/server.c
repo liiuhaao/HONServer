@@ -1,5 +1,7 @@
 #include "server.h"
 #include "table.h"
+int tun_fd; // File descriptor of the TUN interface
+int udp_fd; // The file descriptor of the bound UDP socket
 
 /**
  * Create a TUN interface with the specified name, IP and MTU
@@ -7,12 +9,11 @@
  * @param tun_name Name of the TUN interface
  * @param tun_ip IP address to assign to the TUN interface
  * @param mtu MTU value for the TUN interface
- * @return File descriptor of the TUN interface
  */
-int allocate_tun(char *tun_name, char *tun_ip, int mtu)
+void allocate_tun(char *tun_name, char *tun_ip, int mtu)
 {
     // Create a tun
-    int tun_fd = open("/dev/net/tun", O_RDWR);
+    tun_fd = open("/dev/net/tun", O_RDWR);
     if (tun_fd < 0)
     {
         perror("Error while opening /dev/net/tun!!!");
@@ -37,8 +38,6 @@ int allocate_tun(char *tun_name, char *tun_ip, int mtu)
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "ifconfig tun0 %s/16 mtu %d up", tun_ip, mtu);
     run(cmd);
-
-    return tun_fd;
 }
 
 /**
@@ -46,12 +45,11 @@ int allocate_tun(char *tun_name, char *tun_ip, int mtu)
  *
  * @param server_ip IP address to bind the UDP socket to
  * @param server_port Port to bind the UDP socket to
- * @return The file descriptor of the bound UDP socket
  */
-int bind_udp(char *server_ip, int server_port)
+void bind_udp(char *server_ip, int server_port)
 {
     // Create a socket for UDP communication
-    int udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_fd < 0)
     {
         perror("Error while creating socket!!!\n");
@@ -74,7 +72,6 @@ int bind_udp(char *server_ip, int server_port)
 
     // Listen for incoming packets
     printf("UDP %d is binded on: %s:%d\n", udp_fd, server_ip, server_port);
-    return udp_fd;
 }
 
 /*
@@ -83,8 +80,13 @@ int bind_udp(char *server_ip, int server_port)
 void setup_iptables()
 {
     run("sysctl -w net.ipv4.ip_forward=1");
-    run("iptables -t filter -A FORWARD -i tun0 -o eth0 -j ACCEPT");
-    run("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE");
+
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "iptables -t filter -A FORWARD -i %s -o %s -j ACCEPT", TUN_NAME, INTERFACE_NAME);
+    run(cmd);
+
+    snprintf(cmd, sizeof(cmd), "iptables -t nat -A POSTROUTING -o %s -j MASQUERADE", INTERFACE_NAME);
+    run(cmd);
 }
 
 /*
@@ -92,8 +94,12 @@ void setup_iptables()
  */
 void cleanup_iptables()
 {
-    run("iptables -t filter -D FORWARD -i tun0 -o eth0 -j ACCEPT");
-    run("iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE");
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "iptables -t filter -D FORWARD -i %s -o %s -j ACCEPT", TUN_NAME, INTERFACE_NAME);
+    run(cmd);
+
+    snprintf(cmd, sizeof(cmd), "iptables -t nat -D POSTROUTING -o %s -j MASQUERADE", INTERFACE_NAME);
+    run(cmd);
 }
 
 /*
@@ -121,20 +127,77 @@ void signal_handler(int sig)
     struct nat_record *next;
     while (nat_table)
     {
-        // printf("I am free!!!\n");
         next = nat_table->next;
         free(nat_table);
         nat_table = next;
     }
+
+    while (dec_table)
+    {
+        next = nat_table->next;
+        free_dec(dec_table);
+        nat_table = next;
+    }
+
     printf("Bye!!!\n");
     exit(0);
+}
+
+struct decode_param
+{
+    struct dec_record *dec;
+
+    in_addr_t clinet_vpn_ip;
+    in_port_t clinet_vpn_port;
+};
+void *decode(void *args)
+{
+    struct decode_param *param = (struct decode_param *)args;
+    struct dec_record *dec = param->dec;
+
+    reed_solomon *rs = reed_solomon_new(dec->data_num, dec->block_num - dec->data_num);
+    if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, dec->block_num, dec->block_size))
+    {
+        printf("Decode Error!!!");
+        pthread_exit(NULL);
+    }
+
+    char *buf = (char *)malloc(dec->data_num * dec->block_size * sizeof(char));
+    for (int i = 0; i < dec->data_num; i++)
+    {
+        memcpy(buf + i * dec->block_size, dec->data_blocks[i], dec->block_size);
+    }
+
+    struct sockaddr_in client_addr;
+    client_addr.sin_addr.s_addr = param->clinet_vpn_ip;
+    client_addr.sin_port = param->clinet_vpn_port;
+
+    int pos = 0;
+    while (pos < dec->data_size)
+    {
+        int len = packet_nat(&client_addr, buf + pos, OUT_NAT);
+        if (len <= 0)
+        {
+            perror("Error: packet total_len=0!!!");
+            break;
+        }
+        printf("pos=%d data_size=%d Send Packet len=%d\n", pos, dec->data_size, len);
+        int write_bytes = write(tun_fd, buf + pos, len);
+        if (write_bytes < 0)
+        {
+            perror("Error while sending to tun_fd!!!");
+        }
+        pos += len;
+    }
 }
 
 int main(int argc, char *argv[])
 {
 
-    int tun_fd = allocate_tun(TUN_NAME, TUN_IP, MTU);
-    int udp_fd = bind_udp(SERVER_IP, SERVER_PORT);
+    struct decode_param param;
+
+    allocate_tun(TUN_NAME, TUN_IP, MTU);
+    bind_udp(SERVER_IP, SERVER_PORT);
 
     setup_iptables();
     signal(SIGINT, signal_handler);
@@ -216,56 +279,20 @@ int main(int argc, char *argv[])
 
             int hash_code = be32toh(*((int *)(udp_buf)));
             int data_size = be32toh(*((int *)(udp_buf + 4)));
-            int symbol_size = be32toh(*((int *)(udp_buf + 8)));
-            int k = be32toh(*((int *)(udp_buf + 12)));
-            int n = be32toh(*((int *)(udp_buf + 16)));
+            int block_size = be32toh(*((int *)(udp_buf + 8)));
+            int data_num = be32toh(*((int *)(udp_buf + 12)));
+            int block_num = be32toh(*((int *)(udp_buf + 16)));
             int index = be32toh(*((int *)(udp_buf + 20)));
-            printf("hash_code=%d, data_size=%d, symbol_size=%d, k=%d, n=%d, index=%d\n", hash_code, data_size, symbol_size, k, n, index);
-            struct dec_record *dec = dec_get(hash_code, data_size, symbol_size, k, n);
+            printf("hash_code=%d, data_size=%d, block_size=%d, data_num=%d, block_num=%d, index=%d\n", hash_code, data_size, block_size, data_num, block_num, index);
+            struct dec_record *dec = dec_get(hash_code, data_size, block_size, data_num, block_num);
 
             if (dec_put(dec, index, udp_buf + 24))
             {
-                // for (int i = 0; i < dec->block_num; i++)
-                // {
-                //     printf("%d: ", dec->marks[i]);
-                //     for (int j = 0; j < dec->block_size; j++)
-                //     {
-                //         printf("%d%c", dec->data_blocks[i][j], j == dec->block_size - 1 ? '\n' : ',');
-                //     }
-                // }
+                param.dec = dec;
+                param.clinet_vpn_ip = client_addr.sin_addr.s_addr;
+                param.clinet_vpn_port = client_addr.sin_port;
 
-                reed_solomon *rs = reed_solomon_new(dec->data_num, dec->block_num - dec->data_num);
-                if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, dec->block_num, dec->block_size))
-                {
-                    printf("Decode Error!!!");
-                    dec_remove(dec);
-                    continue;
-                }
-
-                char *buf = (char *)malloc(k * symbol_size * sizeof(char));
-                for (int i = 0; i < k; i++)
-                {
-                    memcpy(buf + i * symbol_size, dec->data_blocks[i], symbol_size);
-                }
-                int pos = 0;
-                while (pos < data_size)
-                {
-                    int len = packet_nat(&client_addr, buf + pos, OUT_NAT);
-                    if (len <= 0)
-                    {
-                        perror("Error: packet total_len=0!!!");
-                        dec_remove(dec);
-                        break;
-                    }
-                    printf("pos=%d Send Packet len=%d\n", pos, len);
-                    int write_bytes = write(tun_fd, buf + pos, len);
-                    if (write_bytes < 0)
-                    {
-                        perror("Error while sending to tun_fd!!!");
-                    }
-                    pos += len;
-                }
-                dec_remove(dec);
+                pthread_create(&(dec->tid), NULL, decode, (void *)(&param));
             }
         }
     }

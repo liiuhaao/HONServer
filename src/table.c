@@ -143,9 +143,16 @@ struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16
         /* Obsolete record */
         if (record->touch + RECORD_TIMEOUT < time(NULL))
         {
-            struct nat_record *tmp = record;
             if (before)
+            {
                 before->next = record->next;
+            }
+            if (record == nat_table)
+            {
+                nat_table = nat_table->next;
+            }
+
+            struct nat_record *tmp = record;
             record = record->next;
             free(tmp);
             continue;
@@ -181,6 +188,7 @@ struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16
 struct dec_record *dec_get(int hash_code, int data_size, int block_size, int data_num, int block_num)
 {
     struct dec_record *record = dec_table;
+    struct dec_record *before = NULL;
     while (record)
     {
         if (record->hash_code == hash_code &&
@@ -196,11 +204,21 @@ struct dec_record *dec_get(int hash_code, int data_size, int block_size, int dat
         /* Obsolete record */
         if (record->touch + RECORD_TIMEOUT < time(NULL))
         {
+            if (before)
+            {
+                before->next = record->next;
+            }
+            if (record == nat_table)
+            {
+                nat_table = nat_table->next;
+            }
+
             struct dec_record *tmp = record;
             record = record->next;
-            dec_remove(tmp);
+            free_dec(tmp);
             continue;
         }
+        before = record;
         record = record->next;
     }
 
@@ -230,42 +248,32 @@ struct dec_record *dec_get(int hash_code, int data_size, int block_size, int dat
     record->touch = time(NULL);
 
     record->next = dec_table ? dec_table : NULL;
-    record->before = NULL;
     dec_table = record;
 
     return record;
 }
 
-void dec_remove(struct dec_record *record)
+int dec_put(struct dec_record *record, int index, unsigned char *block)
 {
-    if (record->before)
-        record->before->next = record->next;
-    if (record->next)
-        record->next->before = record->before;
+    if (!(record->marks[index]))
+        return 0;
+    record->receive_num++;
+    record->marks[index] = 0;
+    memcpy(record->data_blocks[index], block, record->block_size);
+    return record->receive_num == record->data_num;
+}
 
-    free(record->marks);
+void free_dec(struct dec_record *record)
+{
     for (int i = 0; i < record->block_num; i++)
     {
         free(record->data_blocks[i]);
     }
     free(record->data_blocks);
 
+    free(record->marks);
+
     free(record);
-
-    if (record == dec_table)
-    {
-        dec_table = NULL;
-    }
-}
-
-int dec_put(struct dec_record *record, int index, char *d)
-{
-    if (!(record->marks[index]))
-        return 0;
-    record->receive_num++;
-    record->marks[index] = 0;
-    memcpy(record->data_blocks[index], d, record->block_size);
-    return record->receive_num >= record->data_num;
 }
 
 /**
