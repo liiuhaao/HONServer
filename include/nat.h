@@ -1,3 +1,6 @@
+#ifndef NAT_H
+#define NAT_H
+
 #include <linux/types.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
@@ -8,10 +11,13 @@
 #include <stdint.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <stdio.h>
 
 #define MIN_FAKE_PORT 1024
 #define MAX_FAKE_PORT 65535
-#define RECORD_TIMEOUT 60 /* in seconds */
+#define NAT_TIMEOUT 60 /* in seconds */
+
+#define FAKE_IP "10.10.0.15"
 
 #define IN_NAT 1
 #define OUT_NAT 0
@@ -31,27 +37,6 @@ struct nat_record
 
     struct nat_record *next;
 } *nat_table;
-
-struct dec_record
-{
-    unsigned int hash_code;
-
-    unsigned int data_size;
-    unsigned int block_size;
-
-    unsigned int data_num;
-    unsigned int block_num;
-    unsigned int receive_num;
-
-    unsigned char **data_blocks;
-    unsigned char *marks;
-
-    pthread_t tid;
-
-    time_t touch;
-
-    struct dec_record *next;
-} *dec_table;
 
 struct pseudohdr
 {
@@ -85,3 +70,5 @@ in_port_t get_fake_port();
 uint16_t get_ip_icmp_check(const void *const addr, const size_t length);
 
 uint16_t get_tcp_udp_check(const struct iphdr *ip_hdr, union protohdr *proto_hdr);
+
+#endif

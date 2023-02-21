@@ -1,5 +1,4 @@
-#include "table.h"
-#include "server.h"
+#include "nat.h"
 
 char *addr2str(__be32 addr)
 {
@@ -105,7 +104,7 @@ struct nat_record *nat_in(__be32 fake_daddr, __be16 fake_dest)
     {
         if (record->fake_addr == fake_daddr &&
             record->fake_port == fake_dest &&
-            record->touch + RECORD_TIMEOUT > time(NULL))
+            record->touch + NAT_TIMEOUT > time(NULL))
         {
             record->touch = time(NULL); /* touch! */
             break;
@@ -141,7 +140,7 @@ struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16
         }
 
         /* Obsolete record */
-        if (record->touch + RECORD_TIMEOUT < time(NULL))
+        if (record->touch + NAT_TIMEOUT < time(NULL))
         {
             if (before)
             {
@@ -183,97 +182,6 @@ struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16
     nat_table = record;
 
     return record;
-}
-
-struct dec_record *dec_get(int hash_code, int data_size, int block_size, int data_num, int block_num)
-{
-    struct dec_record *record = dec_table;
-    struct dec_record *before = NULL;
-    while (record)
-    {
-        if (record->hash_code == hash_code &&
-            record->data_size == data_size &&
-            record->block_size == block_size &&
-            record->data_num == data_num &&
-            record->block_num == block_num)
-        {
-            record->touch = time(NULL);
-            return record;
-        }
-
-        /* Obsolete record */
-        if (record->touch + RECORD_TIMEOUT < time(NULL))
-        {
-            if (before)
-            {
-                before->next = record->next;
-            }
-            if (record == nat_table)
-            {
-                nat_table = nat_table->next;
-            }
-
-            struct dec_record *tmp = record;
-            record = record->next;
-            free_dec(tmp);
-            continue;
-        }
-        before = record;
-        record = record->next;
-    }
-
-    /* Add new record */
-    if ((record = (struct dec_record *)malloc(sizeof(struct dec_record))) == NULL)
-    {
-        perror("Unable to allocate a new dec record");
-        return NULL;
-    }
-    record->hash_code = hash_code;
-    record->data_size = data_size;
-    record->block_size = block_size;
-
-    record->data_num = data_num;
-    record->block_num = block_num;
-    record->receive_num = 0;
-
-    record->data_blocks = (unsigned char **)malloc(block_num * sizeof(unsigned char *));
-    for (int i = 0; i < record->block_num; i++)
-    {
-        record->data_blocks[i] = (unsigned char *)malloc(block_size * sizeof(unsigned char));
-    }
-
-    record->marks = (unsigned char *)malloc(block_num * sizeof(unsigned char));
-    memset(record->marks, 1, block_num);
-
-    record->touch = time(NULL);
-
-    record->next = dec_table ? dec_table : NULL;
-    dec_table = record;
-
-    return record;
-}
-
-int dec_put(struct dec_record *record, int index, unsigned char *block)
-{
-    if (!(record->marks[index]))
-        return 0;
-    record->receive_num++;
-    record->marks[index] = 0;
-    memcpy(record->data_blocks[index], block, record->block_size);
-    return record->receive_num == record->data_num;
-}
-
-void free_dec(struct dec_record *record)
-{
-    for (int i = 0; i < record->block_num; i++)
-    {
-        free(record->data_blocks[i]);
-    }
-    free(record->data_blocks);
-
-    free(record->marks);
-
-    free(record);
 }
 
 /**

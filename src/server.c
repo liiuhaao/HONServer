@@ -1,7 +1,4 @@
 #include "server.h"
-#include "table.h"
-int tun_fd; // File descriptor of the TUN interface
-int udp_fd; // The file descriptor of the bound UDP socket
 
 /**
  * Create a TUN interface with the specified name, IP and MTU
@@ -9,11 +6,12 @@ int udp_fd; // The file descriptor of the bound UDP socket
  * @param tun_name Name of the TUN interface
  * @param tun_ip IP address to assign to the TUN interface
  * @param mtu MTU value for the TUN interface
+ * @return File descriptor of the TUN interface
  */
-void allocate_tun(char *tun_name, char *tun_ip, int mtu)
+int allocate_tun(char *tun_name, char *tun_ip, int mtu)
 {
     // Create a tun
-    tun_fd = open("/dev/net/tun", O_RDWR);
+    int tun_fd = open("/dev/net/tun", O_RDWR);
     if (tun_fd < 0)
     {
         perror("Error while opening /dev/net/tun!!!");
@@ -38,6 +36,7 @@ void allocate_tun(char *tun_name, char *tun_ip, int mtu)
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "ifconfig tun0 %s/16 mtu %d up", tun_ip, mtu);
     run(cmd);
+    return tun_fd;
 }
 
 /**
@@ -45,11 +44,12 @@ void allocate_tun(char *tun_name, char *tun_ip, int mtu)
  *
  * @param server_ip IP address to bind the UDP socket to
  * @param server_port Port to bind the UDP socket to
+ * @return The file descriptor of the bound UDP socket
  */
-void bind_udp(char *server_ip, int server_port)
+int bind_udp(char *server_ip, int server_port)
 {
     // Create a socket for UDP communication
-    udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_fd < 0)
     {
         perror("Error while creating socket!!!\n");
@@ -72,6 +72,7 @@ void bind_udp(char *server_ip, int server_port)
 
     // Listen for incoming packets
     printf("UDP %d is binded on: %s:%d\n", udp_fd, server_ip, server_port);
+    return udp_fd;
 }
 
 /*
@@ -143,61 +144,21 @@ void signal_handler(int sig)
     exit(0);
 }
 
-struct decode_param
+void *encode(void *args)
 {
-    struct dec_record *dec;
-
-    in_addr_t clinet_vpn_ip;
-    in_port_t clinet_vpn_port;
-};
-void *decode(void *args)
-{
-    struct decode_param *param = (struct decode_param *)args;
-    struct dec_record *dec = param->dec;
-
-    reed_solomon *rs = reed_solomon_new(dec->data_num, dec->block_num - dec->data_num);
-    if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, dec->block_num, dec->block_size))
+    int ret = 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    while (1)
     {
-        printf("Decode Error!!!");
-        pthread_exit(NULL);
-    }
-
-    char *buf = (char *)malloc(dec->data_num * dec->block_size * sizeof(char));
-    for (int i = 0; i < dec->data_num; i++)
-    {
-        memcpy(buf + i * dec->block_size, dec->data_blocks[i], dec->block_size);
-    }
-
-    struct sockaddr_in client_addr;
-    client_addr.sin_addr.s_addr = param->clinet_vpn_ip;
-    client_addr.sin_port = param->clinet_vpn_port;
-
-    int pos = 0;
-    while (pos < dec->data_size)
-    {
-        int len = packet_nat(&client_addr, buf + pos, OUT_NAT);
-        if (len <= 0)
-        {
-            perror("Error: packet total_len=0!!!");
-            break;
-        }
-        printf("pos=%d data_size=%d Send Packet len=%d\n", pos, dec->data_size, len);
-        int write_bytes = write(tun_fd, buf + pos, len);
-        if (write_bytes < 0)
-        {
-            perror("Error while sending to tun_fd!!!");
-        }
-        pos += len;
     }
 }
 
 int main(int argc, char *argv[])
 {
 
-    struct decode_param param;
-
-    allocate_tun(TUN_NAME, TUN_IP, MTU);
-    bind_udp(SERVER_IP, SERVER_PORT);
+    int tun_fd = allocate_tun(TUN_NAME, TUN_IP, MTU);
+    int udp_fd = bind_udp(SERVER_IP, SERVER_PORT);
 
     setup_iptables();
     signal(SIGINT, signal_handler);
@@ -263,20 +224,6 @@ int main(int argc, char *argv[])
 
             printf("\nReceive %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
-            // int len = packet_nat(&client_addr, udp_buf, OUT_NAT);
-            // if (len <= 0)
-            // {
-            //     perror("totallen<=0");
-            //     signal_handler(0);
-            // }
-            // int write_bytes = write(tun_fd, udp_buf, read_bytes);
-            // if (write_bytes < 0)
-            // {
-            //     perror("Error while sending to tun_fd!!!");
-            //     signal_handler(0);
-            // }
-            // continue;
-
             int hash_code = be32toh(*((int *)(udp_buf)));
             int data_size = be32toh(*((int *)(udp_buf + 4)));
             int block_size = be32toh(*((int *)(udp_buf + 8)));
@@ -286,13 +233,16 @@ int main(int argc, char *argv[])
             printf("hash_code=%d, data_size=%d, block_size=%d, data_num=%d, block_num=%d, index=%d\n", hash_code, data_size, block_size, data_num, block_num, index);
             struct dec_record *dec = dec_get(hash_code, data_size, block_size, data_num, block_num);
 
+            struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
+
             if (dec_put(dec, index, udp_buf + 24))
             {
-                param.dec = dec;
-                param.clinet_vpn_ip = client_addr.sin_addr.s_addr;
-                param.clinet_vpn_port = client_addr.sin_port;
-
-                pthread_create(&(dec->tid), NULL, decode, (void *)(&param));
+                dec_p->dec = dec;
+                dec_p->tun_fd = tun_fd;
+                dec_p->clinet_vpn_ip = client_addr.sin_addr.s_addr;
+                dec_p->clinet_vpn_port = client_addr.sin_port;
+                pthread_t dec_tid;
+                pthread_create(&(dec_tid), NULL, decode, (void *)dec_p);
             }
         }
     }

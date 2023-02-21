@@ -1,3 +1,6 @@
+#ifndef SERVER_H
+#define SERVER_H
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -5,7 +8,6 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
-#include <stdbool.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <linux/if.h>
@@ -14,6 +16,9 @@
 #include <stdint.h>
 #include <math.h>
 #include "../lib/rs.h"
+
+#include "nat.h"
+#include "code.h"
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) > (b)) ? (b) : (a))
@@ -24,13 +29,14 @@
 #define INTERFACE_NAME "eth0"
 #define TUN_NAME "tun0"
 #define TUN_IP "10.10.0.1"
-#define FAKE_IP "10.10.0.15"
 #define MTU 1500
 
-void allocate_tun(char *tun_name, char *tun_ip, int mtu);
+int allocate_tun(char *tun_name, char *tun_ip, int mtu);
 
-void bind_udp(char *server_ip, int server_port);
+int bind_udp(char *server_ip, int server_port);
 
 void signal_handler(int sig);
 
 void run(char *cmd);
+
+#endif
