@@ -15,13 +15,11 @@
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#include <errno.h>
 #include "../lib/rs.h"
 
 #include "nat.h"
 #include "code.h"
-
-#define max(a, b) (((a) > (b)) ? (a) : (b))
-#define min(a, b) (((a) > (b)) ? (b) : (a))
 
 #define SERVER_IP "0.0.0.0"
 #define SERVER_PORT 54345

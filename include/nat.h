@@ -30,8 +30,8 @@ struct nat_record
     __be32 fake_addr;
     __be16 fake_port;
 
-    in_addr_t clinet_vpn_ip;
-    in_port_t clinet_vpn_port;
+    in_addr_t client_vpn_ip;
+    in_port_t client_vpn_port;
 
     time_t touch;
 
@@ -52,6 +52,8 @@ union protohdr
     struct tcphdr tcp_hdr;
     struct udphdr udp_hdr;
 };
+
+char *addr2str(__be32 addr);
 
 int packet_nat(struct sockaddr_in *client_addr, char *buf, int in_or_out);
 

@@ -3,33 +3,44 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <unistd.h>
 #include "../lib/rs.h"
-#include "trans.h"
+#include "nat.h"
 
-#define DEC_TIMEOUT 60
+#define DEC_TIMEOUT ((long)1e9)
+#define ENC_TIMEOUT ((long)1e8)
 
-struct dec_param
-{
-    struct dec_record *dec;
+#define MAX_BLOCK_SIZE (1500 - 20 - 8 - 24) // 1448
+#define MAX_DATA_NUM 64
+#define MAX_PACKET_BUF MAX_BLOCK_SIZE *MAX_DATA_NUM // 46336
 
-    int tun_fd;
+#define HASHCODE_MOD ((int)(1e9 + 7));
 
-    in_addr_t clinet_vpn_ip;
-    in_port_t clinet_vpn_port;
-};
+#define max(a, b) (((a) > (b)) ? (a) : (b))
+#define min(a, b) (((a) > (b)) ? (b) : (a))
 
 struct enc_record
 {
-    in_addr_t clinet_vpn_ip;
-    in_port_t clinet_vpn_port;
+    in_addr_t client_vpn_ip;
+    in_port_t client_vpn_port;
 
     unsigned char *packet_buf;
+    unsigned int data_size;
     unsigned int packet_num;
+
+    unsigned char *extra_packet;
+    unsigned int extra_size;
+
+    pthread_mutex_t mutex;
 
     pthread_t tid;
 
+    struct timespec touch;
+
     struct enc_record *next;
 } *enc_table;
+
+pthread_mutex_t enc_table_mutex;
 
 struct dec_record
 {
@@ -42,14 +53,84 @@ struct dec_record
     unsigned int block_num;
     unsigned int receive_num;
 
+    struct timespec touch;
+
     unsigned char **data_blocks;
     unsigned char *marks;
-
-    time_t touch;
 
     struct dec_record *next;
 } *dec_table;
 
+struct dec_param
+{
+    pthread_t tid;
+
+    struct dec_record *dec;
+
+    int tun_fd;
+
+    in_addr_t client_vpn_ip;
+    in_port_t client_vpn_port;
+};
+
+struct input_param
+{
+    pthread_t tid;
+
+    char *packet;
+    unsigned int packet_size;
+
+    int udp_fd;
+
+    in_addr_t client_vpn_ip;
+    in_port_t client_vpn_port;
+};
+
+struct output_param
+{
+    pthread_t tid;
+
+    char *packet;
+    unsigned int packet_size;
+
+    int tun_fd;
+
+    in_addr_t client_vpn_ip;
+    in_port_t client_vpn_port;
+};
+
+struct enc_param
+{
+    pthread_t tid;
+
+    struct enc_record *enc;
+
+    int udp_fd;
+
+    in_addr_t client_vpn_ip;
+    in_port_t client_vpn_port;
+};
+
+void *serve_output(void *args);
+
+struct dec_record *dec_get(int hash_code, int data_size, int block_size, int data_num, int block_num);
+
+int dec_put(struct dec_record *record, int index, unsigned char *block);
+
 void *decode(void *args);
+
+void free_dec(struct dec_record *record);
+
+void *serve_input(void *args);
+
+struct enc_record *enc_get(struct sockaddr_in *client_addr, int udp_fd);
+
+void *encode(void *args);
+
+void enc_delete(in_addr_t client_vpn_ip, in_port_t client_vpn_port);
+
+void free_enc(struct enc_record *record);
+
+unsigned int get_hash_code();
 
 #endif

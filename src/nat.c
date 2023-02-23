@@ -9,7 +9,7 @@ char *addr2str(__be32 addr)
 }
 
 /**
- * Performs NAT (network address translation) for an incoming/outgoing IP packet
+ * Perform NAT (network address translation) for an incoming/outgoing IP packet.
  *
  * @param client_addr Pointer to the client's socket address
  * @param buf Pointer to the IP packet buffer
@@ -50,8 +50,6 @@ int packet_nat(struct sockaddr_in *client_addr, char *buf, int in_or_out)
     {
         return 0;
     }
-    // printf("source=%s:%d, dest=%s:%d\n", addr2str(ip_hdr->saddr), *source, addr2str(ip_hdr->daddr), *dest);
-
     /* Look up nat_table and translate address*/
     struct nat_record *record = NULL;
     if (in_or_out == OUT_NAT)
@@ -67,8 +65,8 @@ int packet_nat(struct sockaddr_in *client_addr, char *buf, int in_or_out)
             return 0;
         ip_hdr->daddr = record->client_addr;
         *dest = ntohs(record->client_port);
-        client_addr->sin_addr.s_addr = record->clinet_vpn_ip;
-        client_addr->sin_port = record->clinet_vpn_port;
+        client_addr->sin_addr.s_addr = record->client_vpn_ip;
+        client_addr->sin_port = record->client_vpn_port;
     }
 
     /* Update checksum */
@@ -91,7 +89,7 @@ int packet_nat(struct sockaddr_in *client_addr, char *buf, int in_or_out)
 }
 
 /**
- * Searches for an record in the nat_table with matching fake destination IP and port
+ * Search for an record in the nat_table with matching fake destination IP and port.
  *
  * @param fake_daddr Fake destination IP
  * @param fake_dest Fake destination port
@@ -115,7 +113,7 @@ struct nat_record *nat_in(__be32 fake_daddr, __be16 fake_dest)
 }
 
 /**
- * Searches for an record in the nat_table with matching fake destination IP and port
+ * Search for an record in the nat_table with matching fake destination IP and port.
  *
  * @param client_addr Client address information
  * @param saddr Source IP address
@@ -132,8 +130,8 @@ struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16
     {
         if (record->client_addr == saddr &&
             record->client_port == source &&
-            record->clinet_vpn_ip == client_addr->sin_addr.s_addr &&
-            record->clinet_vpn_port == client_addr->sin_port)
+            record->client_vpn_ip == client_addr->sin_addr.s_addr &&
+            record->client_vpn_port == client_addr->sin_port)
         {
             record->touch = time(NULL); /* touch! */
             return record;
@@ -173,8 +171,8 @@ struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16
     record->fake_addr = inet_addr(FAKE_IP);
     record->fake_port = get_fake_port();
 
-    record->clinet_vpn_ip = client_addr->sin_addr.s_addr;
-    record->clinet_vpn_port = client_addr->sin_port;
+    record->client_vpn_ip = client_addr->sin_addr.s_addr;
+    record->client_vpn_port = client_addr->sin_port;
 
     record->touch = time(NULL);
 
@@ -185,7 +183,7 @@ struct nat_record *nat_out(struct sockaddr_in *client_addr, __be32 saddr, __be16
 }
 
 /**
- * Allocate a new fake port
+ * Allocate a new fake port.
  *
  * @return A new unused fake port (or 0 if not found)
  */

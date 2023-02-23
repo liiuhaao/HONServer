@@ -1,7 +1,7 @@
 #include "server.h"
 
 /**
- * Create a TUN interface with the specified name, IP and MTU
+ * Create a TUN interface with the specified name, IP and MTU.
  *
  * @param tun_name Name of the TUN interface
  * @param tun_ip IP address to assign to the TUN interface
@@ -40,7 +40,7 @@ int allocate_tun(char *tun_name, char *tun_ip, int mtu)
 }
 
 /**
- * Creates a UDP socket and binds it to the specified IP and port
+ * Creates a UDP socket and binds it to the specified IP and port.
  *
  * @param server_ip IP address to bind the UDP socket to
  * @param server_port Port to bind the UDP socket to
@@ -75,8 +75,9 @@ int bind_udp(char *server_ip, int server_port)
     return udp_fd;
 }
 
-/*
- * Sets up iptables
+/**
+ * Sets up iptables.
+ *
  */
 void setup_iptables()
 {
@@ -90,8 +91,9 @@ void setup_iptables()
     run(cmd);
 }
 
-/*
- * Cleanup the iptables
+/**
+ * Cleanup the iptables.
+ *
  */
 void cleanup_iptables()
 {
@@ -103,8 +105,9 @@ void cleanup_iptables()
     run(cmd);
 }
 
-/*
+/**
  * Execute commands
+ *
  */
 void run(char *cmd)
 {
@@ -117,7 +120,7 @@ void run(char *cmd)
 }
 
 /**
- * Handle signals received by our program
+ * Handle signals received by our program.
  *
  * @param sig The received signal ID
  */
@@ -125,33 +128,32 @@ void signal_handler(int sig)
 {
     printf("\n");
     cleanup_iptables();
-    struct nat_record *next;
+    struct nat_record *nat_next;
     while (nat_table)
     {
-        next = nat_table->next;
+        nat_next = nat_table->next;
         free(nat_table);
-        nat_table = next;
+        nat_table = nat_next;
     }
 
+    struct dec_record *dec_next;
     while (dec_table)
     {
-        next = nat_table->next;
+        dec_next = dec_table->next;
         free_dec(dec_table);
-        nat_table = next;
+        dec_table = dec_next;
+    }
+
+    struct enc_record *enc_next;
+    while (enc_table)
+    {
+        enc_next = enc_table->next;
+        free_enc(enc_table);
+        enc_table = enc_next;
     }
 
     printf("Bye!!!\n");
     exit(0);
-}
-
-void *encode(void *args)
-{
-    int ret = 0;
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    while (1)
-    {
-    }
 }
 
 int main(int argc, char *argv[])
@@ -169,7 +171,9 @@ int main(int argc, char *argv[])
 
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
+
     fec_init();
+    pthread_mutex_init(&enc_table_mutex, NULL);
 
     while (1)
     {
@@ -189,26 +193,21 @@ int main(int argc, char *argv[])
         if (FD_ISSET(tun_fd, &readset))
         {
             int read_bytes = read(tun_fd, tun_buf, MTU);
-
             if (read_bytes < 0)
             {
-                perror("Error while reading tun_fd!!!");
+                perror("Error while reading tun_fd!!!\n");
                 break;
             }
-            // printf("TUN %d recieved %d bytes\n", tun_fd, read_bytes);
 
-            if (packet_nat(&client_addr, tun_buf, IN_NAT))
-            {
-                // TODO: Encode
-                // TODO: Choose udp_fd
-                int write_bytes = sendto(udp_fd, tun_buf, read_bytes, 0, (const struct sockaddr *)&client_addr, client_addr_len);
-                printf("\nSend %d bytes to %s:%i\n", write_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-                if (write_bytes < 0)
-                {
-                    perror("Error while sendding to udp_fd!!!");
-                    break;
-                }
-            }
+            struct input_param *input_p = (struct input_param *)malloc(sizeof(struct input_param));
+            input_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
+            memcpy(input_p->packet, tun_buf, read_bytes);
+            input_p->packet_size = read_bytes;
+            input_p->udp_fd = udp_fd;
+            input_p->client_vpn_ip = client_addr.sin_addr.s_addr;
+            input_p->client_vpn_port = client_addr.sin_port;
+
+            pthread_create(&(input_p->tid), NULL, serve_input, input_p);
         }
 
         // Receive data from the client
@@ -222,28 +221,17 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("\nReceive %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+            printf("\nUDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
-            int hash_code = be32toh(*((int *)(udp_buf)));
-            int data_size = be32toh(*((int *)(udp_buf + 4)));
-            int block_size = be32toh(*((int *)(udp_buf + 8)));
-            int data_num = be32toh(*((int *)(udp_buf + 12)));
-            int block_num = be32toh(*((int *)(udp_buf + 16)));
-            int index = be32toh(*((int *)(udp_buf + 20)));
-            printf("hash_code=%d, data_size=%d, block_size=%d, data_num=%d, block_num=%d, index=%d\n", hash_code, data_size, block_size, data_num, block_num, index);
-            struct dec_record *dec = dec_get(hash_code, data_size, block_size, data_num, block_num);
-
-            struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
-
-            if (dec_put(dec, index, udp_buf + 24))
-            {
-                dec_p->dec = dec;
-                dec_p->tun_fd = tun_fd;
-                dec_p->clinet_vpn_ip = client_addr.sin_addr.s_addr;
-                dec_p->clinet_vpn_port = client_addr.sin_port;
-                pthread_t dec_tid;
-                pthread_create(&(dec_tid), NULL, decode, (void *)dec_p);
-            }
+            struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
+            output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
+            memcpy(output_p->packet, udp_buf, read_bytes);
+            output_p->packet_size = read_bytes;
+            output_p->tun_fd = tun_fd;
+            output_p->client_vpn_ip = client_addr.sin_addr.s_addr;
+            output_p->client_vpn_port = client_addr.sin_port;
+            
+            pthread_create(&(output_p->tid), NULL, serve_output, (void *)output_p);
         }
     }
 
