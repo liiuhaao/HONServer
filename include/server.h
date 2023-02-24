@@ -27,7 +27,7 @@
 #define INTERFACE_NAME "eth0"
 #define TUN_NAME "tun0"
 #define TUN_IP "10.10.0.1"
-#define MTU 1500
+#define MTU 2000
 
 int allocate_tun(char *tun_name, char *tun_ip, int mtu);
 

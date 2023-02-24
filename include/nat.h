@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <stdint.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -37,6 +38,7 @@ struct nat_record
 
     struct nat_record *next;
 } *nat_table;
+pthread_mutex_t nat_table_mutex;
 
 struct pseudohdr
 {

@@ -54,13 +54,17 @@ int packet_nat(struct sockaddr_in *client_addr, char *buf, int in_or_out)
     struct nat_record *record = NULL;
     if (in_or_out == OUT_NAT)
     {
+        pthread_mutex_lock(&nat_table_mutex);
         record = nat_out(client_addr, ip_hdr->saddr, htons(*source));
+        pthread_mutex_unlock(&nat_table_mutex);
         ip_hdr->saddr = record->fake_addr;
         *source = ntohs(record->fake_port);
     }
     else if (in_or_out == IN_NAT)
     {
+        pthread_mutex_lock(&nat_table_mutex);
         record = nat_in(ip_hdr->daddr, htons(*dest));
+        pthread_mutex_unlock(&nat_table_mutex);
         if (record == NULL)
             return 0;
         ip_hdr->daddr = record->client_addr;

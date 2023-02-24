@@ -165,7 +165,7 @@ int main(int argc, char *argv[])
     setup_iptables();
     signal(SIGINT, signal_handler);
 
-    char tun_buf[MTU], udp_buf[MTU];
+    unsigned char tun_buf[MTU], udp_buf[MTU];
     bzero(tun_buf, MTU);
     bzero(udp_buf, MTU);
 
@@ -174,6 +174,7 @@ int main(int argc, char *argv[])
 
     fec_init();
     pthread_mutex_init(&enc_table_mutex, NULL);
+    pthread_mutex_init(&dec_table_mutex, NULL);
 
     while (1)
     {
@@ -207,7 +208,7 @@ int main(int argc, char *argv[])
             input_p->client_vpn_ip = client_addr.sin_addr.s_addr;
             input_p->client_vpn_port = client_addr.sin_port;
 
-            pthread_create(&(input_p->tid), NULL, serve_input, input_p);
+            pthread_create(&(input_p->tid), NULL, serve_input, (void *)input_p);
         }
 
         // Receive data from the client
@@ -230,7 +231,7 @@ int main(int argc, char *argv[])
             output_p->tun_fd = tun_fd;
             output_p->client_vpn_ip = client_addr.sin_addr.s_addr;
             output_p->client_vpn_port = client_addr.sin_port;
-            
+
             pthread_create(&(output_p->tid), NULL, serve_output, (void *)output_p);
         }
     }
