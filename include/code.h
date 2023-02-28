@@ -8,8 +8,8 @@
 #include "../lib/rs.h"
 #include "nat.h"
 
-#define DEC_TIMEOUT ((long)1e9)
-#define ENC_TIMEOUT ((long)1e2)
+#define DEC_TIMEOUT ((long)1e10)
+#define ENC_TIMEOUT ((long)1e6)
 
 #define MAX_BLOCK_SIZE (1500 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64

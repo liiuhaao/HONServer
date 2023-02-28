@@ -41,6 +41,7 @@ void *serve_input(void *args)
         {
             enc->extra_packet = (unsigned char *)malloc(packet_size * sizeof(unsigned char));
             memcpy(enc->extra_packet, packet, packet_size);
+            free(packet);
             enc->extra_size = packet_size;
         }
         pthread_cond_signal(&(enc->cond));
@@ -310,6 +311,7 @@ void *serve_output(void *args)
         dec->marks[index] = 0;
         clock_gettime(CLOCK_REALTIME, &(dec->touch));
         memcpy(dec->data_blocks[index], packet + 24, dec->block_size);
+        free(packet);
         if (dec->receive_num == dec->data_num)
         {
             dec_p->dec = dec;
