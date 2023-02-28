@@ -11,6 +11,6 @@ include_directories(
 )
 
 set(TARGET HONServer)
-set(SRC_LIST src/server.c src/code.c src/nat.c lib/rs.c)
+set(SRC_LIST src/server.c src/fec.c src/nat.c lib/rs.c)
 add_executable(${TARGET} ${SRC_LIST})
 target_link_libraries(${TARGET} pthread)

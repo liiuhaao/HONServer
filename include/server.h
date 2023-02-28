@@ -19,7 +19,7 @@
 #include "../lib/rs.h"
 
 #include "nat.h"
-#include "code.h"
+#include "fec.h"
 
 #define SERVER_IP "0.0.0.0"
 #define SERVER_PORT 54345
