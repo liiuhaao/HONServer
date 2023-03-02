@@ -1,5 +1,9 @@
 #include "nat.h"
 
+struct nat_record *nat_table;
+pthread_mutex_t nat_table_mutex;
+struct pseudohdr pseudo_hdr;
+
 char *addr2str(__be32 addr)
 {
     unsigned char *p = (unsigned char *)&addr;

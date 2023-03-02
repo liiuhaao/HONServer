@@ -5,15 +5,19 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
+#include <string.h>
 #include "../lib/rs.h"
 #include "nat.h"
 
 #define DEC_TIMEOUT ((long)1e10)
-#define ENC_TIMEOUT ((long)1e6)
+#define ENC_TIMEOUT ((long)1e1)
 
-#define MAX_BLOCK_SIZE (1500 - 20 - 8 - 24) // 1448
+#define PARATY_RATE 0
+
+#define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
 #define MAX_PACKET_BUF MAX_BLOCK_SIZE *MAX_DATA_NUM // 46336
+#define MAX_PACKET_NUM 8
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) > (b)) ? (b) : (a))
@@ -36,8 +40,7 @@ struct enc_record
     struct timespec touch;
 
     struct enc_record *next;
-} *enc_table;
-pthread_mutex_t enc_table_mutex;
+};
 
 struct dec_record
 {
@@ -60,8 +63,7 @@ struct dec_record
     struct timespec touch;
 
     struct dec_record *next;
-} *dec_table;
-pthread_mutex_t dec_table_mutex;
+};
 
 struct input_param
 {
@@ -132,5 +134,10 @@ struct dec_record *dec_get(int hash_code, int data_size, int block_size, int dat
 void *decode(void *args);
 
 void free_dec(struct dec_record *record);
+
+extern struct enc_record *enc_table;
+extern pthread_mutex_t enc_table_mutex;
+extern struct dec_record *dec_table;
+extern pthread_mutex_t dec_table_mutex;
 
 #endif

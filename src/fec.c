@@ -1,5 +1,11 @@
 #include "fec.h"
 
+struct enc_record *enc_table;
+pthread_mutex_t enc_table_mutex;
+
+struct dec_record *dec_table;
+pthread_mutex_t dec_table_mutex;
+
 /**
  * Serve incoming input packets from the TUN interface.
  *
@@ -14,6 +20,23 @@ void *serve_input(void *args)
     int udp_fd = param->udp_fd;
     in_addr_t client_vpn_ip = param->client_vpn_ip;
     in_port_t client_vpn_port = param->client_vpn_port;
+
+    // struct sockaddr_in client_addr;
+    // client_addr.sin_family = AF_INET;
+    // client_addr.sin_addr.s_addr = param->client_vpn_ip;
+    // client_addr.sin_port = param->client_vpn_port;
+
+    // if (packet_nat(&client_addr, packet, IN_NAT))
+    // {
+    //     socklen_t client_addr_len = sizeof(client_addr);
+    //     int write_bytes = sendto(udp_fd, packet, packet_size, 0, (const struct sockaddr *)&client_addr, client_addr_len);
+    //     printf("Send %d bytes to %s:%i\n", write_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+    //     if (write_bytes < 0)
+    //     {
+    //         perror("Error while sendding to udp_fd!!!");
+    //     }
+    // }
+
     free(param);
 
     struct sockaddr_in client_addr;
@@ -126,12 +149,11 @@ void *encode(void *args)
         struct timespec now;
         clock_gettime(CLOCK_REALTIME, &now);
 
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_nsec += ENC_TIMEOUT / ((enc->packet_num) + 1);
-        int rc = pthread_cond_timedwait(&(enc->cond), &(enc->mutex), &timeout);
+        now.tv_nsec += ENC_TIMEOUT / ((enc->packet_num) + 1);
+        int rc = pthread_cond_timedwait(&(enc->cond), &(enc->mutex), &now);
+        int timeout = (rc == ETIMEDOUT);
 
-        if ((rc == ETIMEDOUT) && enc->packet_num == 0)
+        if (timeout && enc->packet_num == 0)
         {
             if (!(pthread_mutex_trylock(&enc_table_mutex)))
             {
@@ -142,7 +164,7 @@ void *encode(void *args)
             }
         }
 
-        if (((rc == ETIMEDOUT) && enc->packet_num > 0) || (enc->extra_size > 0))
+        if ((timeout && enc->packet_num > 0) || (enc->extra_size > 0) || (enc->packet_num >= MAX_PACKET_NUM))
         {
             unsigned int data_size = enc->data_size;
             unsigned int block_size = data_size > MAX_BLOCK_SIZE ? MAX_BLOCK_SIZE : data_size;
@@ -152,7 +174,7 @@ void *encode(void *args)
             srand(enc->touch.tv_nsec);
             for (unsigned int i = 0; i < data_num; i++)
             {
-                if (rand() % 100 + 1 < 20)
+                if (rand() % 100 + 1 < PARATY_RATE)
                 {
                     block_num++;
                 }
@@ -287,6 +309,27 @@ void *serve_output(void *args)
     unsigned char *packet = param->packet;
     unsigned int packet_size = param->packet_size;
     int tun_fd = param->tun_fd;
+
+    // struct sockaddr_in client_addr;
+    // client_addr.sin_family = AF_INET;
+    // client_addr.sin_addr.s_addr = param->client_vpn_ip;
+    // client_addr.sin_port = param->client_vpn_port;
+    // int len = packet_nat(&client_addr, packet, OUT_NAT);
+    // if (len <= 0)
+    // {
+    //     perror("Error: packet len=0!!!");
+    // }
+    // else
+    // {
+    //     printf("Send Packet len=%d\n", packet_size);
+    //     int write_bytes = write(tun_fd, packet, packet_size);
+    //     if (write_bytes < 0)
+    //     {
+    //         perror("Error while sending to tun_fd!!!");
+    //     }
+    // }
+    // free(packet);
+
     in_addr_t client_vpn_ip = param->client_vpn_ip;
     in_port_t client_vpn_port = param->client_vpn_port;
     free(param);
