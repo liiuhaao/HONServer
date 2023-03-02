@@ -6,6 +6,9 @@ pthread_mutex_t enc_table_mutex;
 struct dec_record *dec_table;
 pthread_mutex_t dec_table_mutex;
 
+double paraty_rate = 0;
+pthread_mutex_t paraty_mutex;
+
 /**
  * Serve incoming input packets from the TUN interface.
  *
@@ -167,14 +170,20 @@ void *encode(void *args)
         if ((timeout && enc->packet_num > 0) || (enc->extra_size > 0) || (enc->packet_num >= MAX_PACKET_NUM))
         {
             unsigned int data_size = enc->data_size;
-            unsigned int block_size = data_size > MAX_BLOCK_SIZE ? MAX_BLOCK_SIZE : data_size;
-            unsigned int data_num = (data_size + block_size - 1) / block_size;
+            unsigned int data_num = enc->packet_num;
+            unsigned int block_size = (data_size + data_num - 1) / data_num;
+
+            // unsigned int block_size = data_size > MAX_BLOCK_SIZE ? MAX_BLOCK_SIZE : data_size;
+            // unsigned int data_num = (data_size + block_size - 1) / block_size;
             // unsigned int block_num = data_num + (unsigned int)(data_num * 0.2);
             unsigned int block_num = data_num;
             srand(enc->touch.tv_nsec);
+            // pthread_mutex_lock(&paraty_mutex);
+            double rate = paraty_rate;
+            // pthread_mutex_unlock(&paraty_mutex);
             for (unsigned int i = 0; i < data_num; i++)
             {
-                if (rand() % 100 + 1 < PARATY_RATE)
+                if (rand() % 100 + 1 < rate)
                 {
                     block_num++;
                 }
@@ -205,7 +214,7 @@ void *encode(void *args)
             unsigned char *buffer = (unsigned char *)malloc((24 + block_size) * sizeof(unsigned char));
             unsigned int hash_code = get_hash_code();
 
-            printf("TIMEOUT: hash_code=%d, data_size=%d, block_size=%d, data_num=%d, block_num=%d\n", hash_code, data_size, block_size, data_num, block_num);
+            printf("TIMEOUT: hash_code=%d, data_size=%d, block_size=%d, data_num=%d, block_num=%d paraty_rate=%f\n", hash_code, data_size, block_size, data_num, block_num, rate);
 
             for (unsigned int index = 0; index < block_num; index++)
             {
@@ -343,7 +352,6 @@ void *serve_output(void *args)
 
     pthread_mutex_lock(&dec_table_mutex);
     struct dec_record *dec = dec_get(hash_code, data_size, block_size, data_num, block_num);
-    struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
 
     pthread_mutex_lock(&(dec->mutex));
     pthread_mutex_unlock(&dec_table_mutex);
@@ -357,6 +365,7 @@ void *serve_output(void *args)
         free(packet);
         if (dec->receive_num == dec->data_num)
         {
+            struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
             dec_p->dec = dec;
             dec_p->tun_fd = tun_fd;
             dec_p->client_vpn_ip = client_vpn_ip;
@@ -414,6 +423,14 @@ struct dec_record *dec_get(int hash_code, int data_size, int block_size, int dat
 
             struct dec_record *tmp = record;
             record = record->next;
+            if (record->block_num > 0)
+            {
+                // pthread_mutex_lock(&paraty_mutex);
+                // printf("%d %d %f %f\n", record->block_num, record->receive_num, paraty_rate, (1.0 * (record->block_num - record->receive_num) / record->block_num));
+                // paraty_rate = paraty_rate * 0.9 + (1.0 * (record->block_num - record->receive_num) / record->block_num);
+                // printf("%d %d %f %f done!!\n", record->block_num, record->receive_num, paraty_rate, (1.0 * (record->block_num - record->receive_num) / record->block_num));
+                // pthread_mutex_unlock(&paraty_mutex);
+            }
             free_dec(tmp);
             continue;
         }
@@ -491,7 +508,7 @@ void *decode(void *args)
     while (pos < dec->data_size)
     {
         int len = packet_nat(&client_addr, buf + pos, OUT_NAT);
-        printf("pos=%d data_size=%d len=%d\n", pos, dec->data_size, len);
+        // printf("pos=%d data_size=%d len=%d\n", pos, dec->data_size, len);
         if (len <= 0)
         {
             perror("Error: packet len=0!!!");

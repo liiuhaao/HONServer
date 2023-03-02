@@ -173,6 +173,8 @@ int main(int argc, char *argv[])
     socklen_t client_addr_len = sizeof(client_addr);
 
     fec_init();
+    pthread_mutex_init(&paraty_mutex, NULL);
+    pthread_mutex_init(&nat_table_mutex, NULL);
     pthread_mutex_init(&enc_table_mutex, NULL);
     pthread_mutex_init(&dec_table_mutex, NULL);
 
