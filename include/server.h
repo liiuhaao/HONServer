@@ -16,8 +16,9 @@
 #include <stdint.h>
 #include <math.h>
 #include <errno.h>
+#include <assert.h>
 #include "../lib/rs.h"
-
+#include "../lib/threadpool.h"
 #include "nat.h"
 #include "fec.h"
 
@@ -28,6 +29,8 @@
 #define TUN_NAME "tun0"
 #define TUN_IP "10.10.0.1"
 #define MTU 2000
+#define THREAD 32
+#define QUEUE  4096
 
 int allocate_tun(char *tun_name, char *tun_ip, int mtu);
 

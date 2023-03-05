@@ -177,6 +177,11 @@ int main(int argc, char *argv[])
     pthread_mutex_init(&enc_table_mutex, NULL);
     pthread_mutex_init(&dec_table_mutex, NULL);
 
+    threadpool_t *pool;
+    assert((pool = threadpool_create(THREAD, QUEUE, 0)) != NULL);
+    fprintf(stderr, "Pool started with %d threads and "
+            "queue size of %d\n", THREAD, QUEUE);
+    
     while (1)
     {
         fd_set readset;
@@ -206,8 +211,8 @@ int main(int argc, char *argv[])
             memcpy(input_p->packet, tun_buf, read_bytes);
             input_p->packet_size = read_bytes;
             input_p->udp_fd = udp_fd;
-
-            pthread_create(&(input_p->tid), NULL, serve_input, (void *)input_p);
+            threadpool_add(pool,serve_input,(void *)input_p,0);
+            //pthread_create(&(input_p->tid), NULL, serve_input, (void *)input_p);
         }
 
         // Receive data from the client
@@ -230,8 +235,8 @@ int main(int argc, char *argv[])
             output_p->tun_fd = tun_fd;
             output_p->client_vpn_ip = client_addr.sin_addr.s_addr;
             output_p->client_vpn_port = client_addr.sin_port;
-
-            pthread_create(&(output_p->tid), NULL, serve_output, (void *)output_p);
+            threadpool_add(pool,serve_output,(void *)output_p,0);
+            //pthread_create(&(output_p->tid), NULL, serve_output, (void *)output_p);
         }
     }
 
