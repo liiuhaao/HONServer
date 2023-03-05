@@ -173,7 +173,6 @@ int main(int argc, char *argv[])
     socklen_t client_addr_len = sizeof(client_addr);
 
     fec_init();
-    pthread_mutex_init(&paraty_mutex, NULL);
     pthread_mutex_init(&nat_table_mutex, NULL);
     pthread_mutex_init(&enc_table_mutex, NULL);
     pthread_mutex_init(&dec_table_mutex, NULL);
@@ -222,7 +221,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("\nUDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+            printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));

@@ -6,6 +6,9 @@ pthread_mutex_t enc_table_mutex;
 struct dec_record *dec_table;
 pthread_mutex_t dec_table_mutex;
 
+double parity_rate = 0;
+pthread_mutex_t parity_mutex;
+
 /**
  * Serve incoming input packets from the TUN interface.
  *
@@ -52,38 +55,22 @@ void *serve_input(void *args)
         pthread_mutex_lock(&(enc->mutex));
         pthread_mutex_unlock(&(enc_table_mutex));
 
-        // clock_gettime(CLOCK_REALTIME, &(enc->touch));
+        clock_gettime(CLOCK_REALTIME, &(enc->touch));
         if ((packet_size + enc->data_size) < MAX_PACKET_BUF)
         {
             memcpy(enc->packet_buf + enc->data_size, packet, packet_size);
             free(packet);
             enc->data_size += packet_size;
             enc->packet_num += 1;
-
-            if (enc->packet_num >= MAX_PACKET_NUM)
-            {
-                struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
-                enc_p->enc = enc;
-                enc_p->udp_fd = udp_fd;
-                enc_p->client_vpn_ip = client_addr.sin_addr.s_addr;
-                enc_p->client_vpn_port = client_addr.sin_port;
-                encode((void *)enc_p);
-            }
         }
         else
         {
-            struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
-            enc_p->enc = enc;
-            enc_p->udp_fd = udp_fd;
-            enc_p->client_vpn_ip = client_addr.sin_addr.s_addr;
-            enc_p->client_vpn_port = client_addr.sin_port;
-            encode((void *)enc_p);
-
-            memcpy(enc->packet_buf + enc->data_size, packet, packet_size);
+            enc->extra_packet = (unsigned char *)malloc(packet_size * sizeof(unsigned char));
+            memcpy(enc->extra_packet, packet, packet_size);
             free(packet);
-            enc->data_size = packet_size;
-            enc->packet_num = 1;
+            enc->extra_size = packet_size;
         }
+        pthread_cond_signal(&(enc->cond));
         pthread_mutex_unlock(&(enc->mutex));
     }
     pthread_exit(NULL);
@@ -99,55 +86,15 @@ void *serve_input(void *args)
 struct enc_record *enc_get(struct sockaddr_in *client_addr, int udp_fd)
 {
     struct enc_record *record = enc_table;
-    struct enc_record *before = NULL;
-    struct enc_record *enc_return = NULL;
 
     while (record)
     {
-        struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-
-        long time_delta = (now.tv_sec - record->touch.tv_sec) * (long)1e9 + (now.tv_sec - record->touch.tv_nsec);
-
-        /* Obsolete record */
-        if (time_delta > ENC_TIMEOUT && !pthread_mutex_trylock(&(record->mutex)))
-        {
-            if (before)
-            {
-                before->next = record->next;
-            }
-            if (record == enc_table)
-            {
-                enc_table = enc_table->next;
-            }
-
-            struct enc_record *tmp = record;
-            record = record->next;
-
-            struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
-            enc_p->enc = tmp;
-            enc_p->udp_fd = udp_fd;
-            enc_p->client_vpn_ip = client_addr->sin_addr.s_addr;
-            enc_p->client_vpn_port = client_addr->sin_port;
-            encode((void *)enc_p);
-
-            pthread_mutex_unlock(&(tmp->mutex));
-            free_enc(tmp);
-            continue;
-        }
-
         if (record->client_vpn_ip == client_addr->sin_addr.s_addr &&
             record->client_vpn_port == client_addr->sin_port)
         {
-            enc_return = record;
+            return record;
         }
-
-        before = record;
         record = record->next;
-    }
-    if (enc_return)
-    {
-        return enc_return;
     }
 
     /* Add new record */
@@ -170,6 +117,12 @@ struct enc_record *enc_get(struct sockaddr_in *client_addr, int udp_fd)
     record->next = enc_table ? enc_table : NULL;
     enc_table = record;
 
+    struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
+    enc_p->enc = record;
+    enc_p->udp_fd = udp_fd;
+    enc_p->client_vpn_ip = client_addr->sin_addr.s_addr;
+    enc_p->client_vpn_port = client_addr->sin_port;
+    pthread_create(&(enc_p->tid), NULL, encode, (void *)enc_p);
     return record;
 }
 
@@ -180,6 +133,7 @@ struct enc_record *enc_get(struct sockaddr_in *client_addr, int udp_fd)
  */
 void *encode(void *args)
 {
+    pthread_detach(pthread_self());
     struct enc_param *enc_p = (struct enc_param *)args;
     struct enc_record *enc = enc_p->enc;
     int udp_fd = enc_p->udp_fd;
@@ -189,73 +143,112 @@ void *encode(void *args)
     client_addr.sin_addr.s_addr = enc_p->client_vpn_ip;
     client_addr.sin_port = enc_p->client_vpn_port;
     socklen_t client_addr_len = sizeof(client_addr);
+
     free(enc_p);
 
-    unsigned int data_size = enc->data_size;
-    
-    unsigned int data_num = enc->packet_num;
-    unsigned int block_size = (data_size + data_num - 1) / data_num;
-
-    // unsigned int block_size = data_size > MAX_BLOCK_SIZE ? MAX_BLOCK_SIZE : data_size;
-    // unsigned int data_num = (data_size + block_size - 1) / block_size;
-    
-    // unsigned int block_num = data_num + (unsigned int)(data_num * 0.2);
-    unsigned int block_num = data_num;
-    srand(enc->touch.tv_nsec);
-    for (unsigned int i = 0; i < data_num; i++)
+    while (1)
     {
-        if (rand() % 100 + 1 < PARITY_RATE)
+        pthread_mutex_lock(&(enc->mutex));
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+
+        // now.tv_nsec += ENC_TIMEOUT / ((enc->packet_num) + 1);
+        int rc = pthread_cond_timedwait(&(enc->cond), &(enc->mutex), &now);
+        int timeout = (rc == ETIMEDOUT);
+
+        if (timeout && enc->packet_num == 0)
         {
-            block_num++;
+            if (!(pthread_mutex_trylock(&enc_table_mutex)))
+            {
+                pthread_mutex_unlock(&(enc->mutex));
+                enc_delete(enc->client_vpn_ip, enc->client_vpn_port);
+                pthread_mutex_unlock(&enc_table_mutex);
+                break;
+            }
         }
-    }
 
-    enc->data_size = 0;
-    enc->packet_num = 0;
-
-    unsigned char arr[block_num][block_size];
-    memset(arr, 0, sizeof(arr));
-    unsigned char *data_blocks[block_num];
-
-    for (int i = 0; i < block_num; i++)
-    {
-        if (i < data_num)
+        if ((timeout && enc->packet_num > 0) || (enc->extra_size > 0) || (enc->packet_num >= MAX_PACKET_NUM))
         {
-            memcpy(arr[i], enc->packet_buf + i * block_size, block_size);
+            unsigned int data_size = enc->data_size;
+            unsigned int data_num = enc->packet_num;
+            unsigned int block_size = (data_size + data_num - 1) / data_num;
+
+            // unsigned int block_size = data_size > MAX_BLOCK_SIZE ? MAX_BLOCK_SIZE : data_size;
+            // unsigned int data_num = (data_size + block_size - 1) / block_size;
+            // unsigned int block_num = data_num + (unsigned int)(data_num * 0.2);
+            unsigned int block_num = data_num;
+            srand(enc->touch.tv_nsec);
+            pthread_mutex_lock(&parity_mutex);
+            double rate = parity_rate * 100;
+            pthread_mutex_unlock(&parity_mutex);
+            for (unsigned int i = 0; i < data_num; i++)
+            {
+                if (rand() % 100 + 1 < rate)
+                {
+                    block_num++;
+                }
+            }
+
+            enc->data_size = 0;
+            enc->packet_num = 0;
+
+            unsigned char arr[block_num][block_size];
+            memset(arr, 0, sizeof(arr));
+            unsigned char *data_blocks[block_num];
+
+            for (int i = 0; i < block_num; i++)
+            {
+                if (i < data_num)
+                {
+                    memcpy(arr[i], enc->packet_buf + i * block_size, block_size);
+                }
+                data_blocks[i] = arr[i];
+            }
+
+            if (block_num > data_num)
+            {
+                reed_solomon *rs = reed_solomon_new(data_num, block_num - data_num);
+                reed_solomon_encode2(rs, data_blocks, block_num, block_size);
+            }
+
+            unsigned char *buffer = (unsigned char *)malloc((24 + block_size) * sizeof(unsigned char));
+            unsigned int hash_code = get_hash_code();
+
+            // printf("TIMEOUT: hash_code=%d, data_size=%d, block_size=%d, data_num=%d, block_num=%d paraty_rate=%f\n", hash_code, data_size, block_size, data_num, block_num, rate);
+
+            for (unsigned int index = 0; index < block_num; index++)
+            {
+                *((unsigned int *)(buffer)) = htobe32(hash_code);
+                *((unsigned int *)(buffer + 4)) = htobe32(data_size);
+                *((unsigned int *)(buffer + 8)) = htobe32(block_size);
+                *((unsigned int *)(buffer + 12)) = htobe32(data_num);
+                *((unsigned int *)(buffer + 16)) = htobe32(block_num);
+                *((unsigned int *)(buffer + 20)) = htobe32(index);
+
+                memcpy(buffer + 24, data_blocks[index], block_size);
+
+                int write_bytes = sendto(udp_fd, buffer, block_size + 24, 0, (const struct sockaddr *)&client_addr, client_addr_len);
+                printf("Send %d bytes to %s:%i\n", write_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+                if (write_bytes < 0)
+                {
+                    pthread_mutex_unlock(&(enc->mutex));
+                    perror("Error while sendding to udp_fd!!!");
+                    break;
+                }
+            }
         }
-        data_blocks[i] = arr[i];
-    }
 
-    if (block_num > data_num)
-    {
-        reed_solomon *rs = reed_solomon_new(data_num, block_num - data_num);
-        reed_solomon_encode2(rs, data_blocks, block_num, block_size);
-    }
-
-    unsigned char *buffer = (unsigned char *)malloc((24 + block_size) * sizeof(unsigned char));
-    unsigned int hash_code = get_hash_code();
-
-    // printf("TIMEOUT: hash_code=%d, data_size=%d, block_size=%d, data_num=%d, block_num=%d paraty_rate=%f\n", hash_code, data_size, block_size, data_num, block_num, rate);
-
-    for (unsigned int index = 0; index < block_num; index++)
-    {
-        *((unsigned int *)(buffer)) = htobe32(hash_code);
-        *((unsigned int *)(buffer + 4)) = htobe32(data_size);
-        *((unsigned int *)(buffer + 8)) = htobe32(block_size);
-        *((unsigned int *)(buffer + 12)) = htobe32(data_num);
-        *((unsigned int *)(buffer + 16)) = htobe32(block_num);
-        *((unsigned int *)(buffer + 20)) = htobe32(index);
-
-        memcpy(buffer + 24, data_blocks[index], block_size);
-
-        int write_bytes = sendto(udp_fd, buffer, block_size + 24, 0, (const struct sockaddr *)&client_addr, client_addr_len);
-        printf("Send %d bytes to %s:%i\n", write_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-        if (write_bytes < 0)
+        if (enc->extra_size)
         {
-            perror("Error while sendding to udp_fd!!!");
-            break;
+            memcpy(enc->packet_buf, enc->extra_packet, enc->extra_size);
+            enc->data_size = enc->extra_size;
+            enc->packet_num = 1;
+            free(enc->extra_packet);
+            enc->extra_size = 0;
         }
+        pthread_mutex_unlock(&(enc->mutex));
     }
+    pthread_exit(NULL);
 }
 
 /**
@@ -431,6 +424,12 @@ struct dec_record *dec_get(int hash_code, int data_size, int block_size, int dat
 
             struct dec_record *tmp = record;
             record = record->next;
+            if (tmp->block_num > 0)
+            {
+                pthread_mutex_lock(&parity_mutex);
+                parity_rate = parity_rate * 0.9 + (0.1 * (tmp->block_num - tmp->receive_num) / tmp->block_num);
+                pthread_mutex_unlock(&parity_mutex);
+            }
             pthread_mutex_unlock(&(tmp->mutex));
             free_dec(tmp);
             continue;

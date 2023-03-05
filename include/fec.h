@@ -9,13 +9,14 @@
 #include "../lib/rs.h"
 #include "nat.h"
 
-#define DEC_TIMEOUT ((long)1e10)
-#define ENC_TIMEOUT ((long)1e1)
+#define DEC_TIMEOUT ((long)1e9)
+#define ENC_TIMEOUT ((long)1e3)
 
 #define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
 #define MAX_PACKET_BUF MAX_BLOCK_SIZE *MAX_DATA_NUM // 46336
-#define MAX_PACKET_NUM 5
+#define MAX_PACKET_NUM 10
+#define PARITY_RATE 0
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) > (b)) ? (b) : (a))
@@ -137,6 +138,6 @@ extern struct enc_record *enc_table;
 extern pthread_mutex_t enc_table_mutex;
 extern struct dec_record *dec_table;
 extern pthread_mutex_t dec_table_mutex;
-extern pthread_mutex_t paraty_mutex;
+extern pthread_mutex_t parity_mutex;
 
 #endif
