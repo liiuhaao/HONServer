@@ -241,5 +241,7 @@ int main(int argc, char *argv[])
     }
 
     signal_handler(0);
+    assert(threadpool_destroy(pool, 0) == 0);
+    
     return 0;
 }
