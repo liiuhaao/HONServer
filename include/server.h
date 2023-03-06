@@ -29,8 +29,8 @@
 #define TUN_NAME "tun0"
 #define TUN_IP "10.10.0.1"
 #define MTU 2000
-#define THREAD 32
-#define QUEUE  4096
+#define THREAD 64
+#define QUEUE  32768
 
 int allocate_tun(char *tun_name, char *tun_ip, int mtu);
 
