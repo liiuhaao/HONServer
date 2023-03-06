@@ -249,7 +249,7 @@ void *encode(void *args)
         memcpy(buffer + 24, data_blocks[index], block_size);
 
         int write_bytes = sendto(udp_fd, buffer, block_size + 24, 0, (const struct sockaddr *)&client_addr, client_addr_len);
-        printf("Send %d bytes to %s:%i\n", write_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+        //printf("Send %d bytes to %s:%i\n", write_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
         if (write_bytes < 0)
         {
             perror("Error while sendding to udp_fd!!!");
