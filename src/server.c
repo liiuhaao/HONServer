@@ -226,7 +226,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+            //printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
@@ -242,6 +242,6 @@ int main(int argc, char *argv[])
 
     signal_handler(0);
     assert(threadpool_destroy(pool, 0) == 0);
-    
+
     return 0;
 }

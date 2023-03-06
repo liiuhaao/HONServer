@@ -46,7 +46,7 @@ void *serve_input(void *args)
 
     if (packet_nat(&client_addr, packet, IN_NAT))
     {
-        printf("TUN recieved %d bytes\n", packet_size);
+        //printf("TUN recieved %d bytes\n", packet_size);
         pthread_mutex_lock(&(enc_table_mutex));
         struct enc_record *enc = enc_get(&client_addr, udp_fd);
         pthread_mutex_lock(&(enc->mutex));
@@ -515,7 +515,7 @@ void *decode(void *args)
             perror("Error: packet len=0!!!");
             break;
         }
-        printf("Send Packet len=%d\n", len);
+        //printf("Send Packet len=%d\n", len);
         int write_bytes = write(tun_fd, buf + pos, len);
         if (write_bytes < 0)
         {
