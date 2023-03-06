@@ -13,7 +13,7 @@ pthread_mutex_t dec_table_mutex;
  */
 void *serve_input(void *args)
 {
-    pthread_detach(pthread_self());
+    //pthread_detach(pthread_self());
     struct input_param *param = (struct input_param *)args;
     unsigned char *packet = param->packet;
     unsigned int packet_size = param->packet_size;
@@ -86,7 +86,7 @@ void *serve_input(void *args)
         }
         pthread_mutex_unlock(&(enc->mutex));
     }
-    pthread_exit(NULL);
+    //pthread_exit(NULL);
 }
 
 /**
@@ -319,9 +319,9 @@ unsigned int get_hash_code()
  *
  * @param args: Void pointer to output_param struct containing packet data and client information
  */
-void *serve_output(void *args)
+void *serve_output(void *args) //client to server
 {
-    pthread_detach(pthread_self());
+    //pthread_detach(pthread_self());
     struct output_param *param = (struct output_param *)args;
     unsigned char *packet = param->packet;
     unsigned int packet_size = param->packet_size;
@@ -383,7 +383,7 @@ void *serve_output(void *args)
     }
     pthread_mutex_unlock(&(dec->mutex));
 
-    pthread_exit(NULL);
+    //pthread_exit(NULL);
 }
 
 /**
