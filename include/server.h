@@ -17,9 +17,9 @@
 #include <math.h>
 #include <errno.h>
 #include <assert.h>
+#include <sys/select.h> 
 #include "../lib/rs.h"
 #include "../lib/threadpool.h"
-#include "nat.h"
 #include "fec.h"
 
 #define SERVER_IP "0.0.0.0"

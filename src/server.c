@@ -128,29 +128,6 @@ void signal_handler(int sig)
 {
     printf("\n");
     cleanup_iptables();
-    struct nat_record *nat_next;
-    while (nat_table)
-    {
-        nat_next = nat_table->next;
-        free(nat_table);
-        nat_table = nat_next;
-    }
-
-    struct dec_record *dec_next;
-    while (dec_table)
-    {
-        dec_next = dec_table->next;
-        free_dec(dec_table);
-        dec_table = dec_next;
-    }
-
-    struct enc_record *enc_next;
-    while (enc_table)
-    {
-        enc_next = enc_table->next;
-        free_enc(enc_table);
-        enc_table = enc_next;
-    }
 
     printf("Bye!!!\n");
     exit(0);
@@ -173,15 +150,14 @@ int main(int argc, char *argv[])
     socklen_t client_addr_len = sizeof(client_addr);
 
     fec_init();
-    pthread_mutex_init(&nat_table_mutex, NULL);
-    pthread_mutex_init(&enc_table_mutex, NULL);
-    pthread_mutex_init(&dec_table_mutex, NULL);
+    pthread_mutex_init(&group_list_mutex, NULL);
 
     threadpool_t *pool;
     assert((pool = threadpool_create(THREAD, QUEUE, 0)) != NULL);
     fprintf(stderr, "Pool started with %d threads and "
-            "queue size of %d\n", THREAD, QUEUE);
-    
+                    "queue size of %d\n",
+            THREAD, QUEUE);
+
     while (1)
     {
         fd_set readset;
@@ -211,8 +187,8 @@ int main(int argc, char *argv[])
             memcpy(input_p->packet, tun_buf, read_bytes);
             input_p->packet_size = read_bytes;
             input_p->udp_fd = udp_fd;
-            threadpool_add(pool,serve_input,(void *)input_p,0);
-            //pthread_create(&(input_p->tid), NULL, serve_input, (void *)input_p);
+            threadpool_add(pool, serve_input, (void *)input_p, 0);
+            // pthread_create(&(input_p->tid), NULL, serve_input, (void *)input_p);
         }
 
         // Receive data from the client
@@ -226,17 +202,17 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            //printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+            // printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
             memcpy(output_p->packet, udp_buf, read_bytes);
             output_p->packet_size = read_bytes;
             output_p->tun_fd = tun_fd;
-            output_p->client_vpn_ip = client_addr.sin_addr.s_addr;
-            output_p->client_vpn_port = client_addr.sin_port;
-            threadpool_add(pool,serve_output,(void *)output_p,0);
-            //pthread_create(&(output_p->tid), NULL, serve_output, (void *)output_p);
+            output_p->udp_ip = client_addr.sin_addr.s_addr;
+            output_p->udp_port = client_addr.sin_port;
+            threadpool_add(pool, serve_output, (void *)output_p, 0);
+            // pthread_create(&(output_p->tid), NULL, serve_output, (void *)output_p);
         }
     }
 
