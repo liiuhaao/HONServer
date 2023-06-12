@@ -32,7 +32,7 @@ void *serve_input(void *args)
     pthread_mutex_lock(&(enc->mutex));
     pthread_mutex_unlock(&group_list_mutex);
 
-    /* If the If the encoder buffer is not full, add the packet to the buffer */
+    /* If the encoder buffer is not full, add the packet to the buffer */
     if ((packet_size + enc->data_size) < MAX_PACKET_BUF)
     {
         /* Add the packet to the encoder buffer */
@@ -61,7 +61,7 @@ void *serve_input(void *args)
         encode((void *)enc_p);
 
         /* Add the packet to the encoder buffer */
-        memcpy(enc->packet_buf + enc->data_size, packet, packet_size);
+        memcpy(enc->packet_buf, packet, packet_size);
         free(packet);
         enc->data_size += packet_size;
         enc->packet_num += 1;
