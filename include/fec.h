@@ -24,7 +24,7 @@
 #define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
 #define MAX_PACKET_BUF MAX_BLOCK_SIZE *MAX_DATA_NUM // 46336
-#define MAX_PACKET_NUM 10
+#define MAX_PACKET_NUM 1
 #define PARITY_RATE 0
 
 #define INPUT 1

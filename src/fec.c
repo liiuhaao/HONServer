@@ -23,9 +23,9 @@ void *serve_input(void *args) // from server to client
     struct sockaddr_in *vpn_addr = get_packet_addr(packet, INPUT);
     if (vpn_addr == NULL)
         return NULL;
-    pthread_mutex_lock(&group_list_mutex);
 
     /* Get the group of the target address by vpn address*/
+    pthread_mutex_lock(&group_list_mutex);
     struct group *group = get_group(-1, vpn_addr, udp_fd);
     if (group == NULL)
     {
@@ -105,9 +105,9 @@ void *serve_output(void *args) // client to server
     unsigned int block_num = be32toh(*((int *)(packet + 16)));
     unsigned int index = be32toh(*((int *)(packet + 20)));
 
-    pthread_mutex_lock(&group_list_mutex);
 
     /* Get the group by groupID */
+    pthread_mutex_lock(&group_list_mutex);
     struct group *group = get_group(groupID, NULL, udp_fd);
 
     /* Create a new group if it does not exist */
@@ -290,7 +290,6 @@ void *decode(void *args)
 
         /* Send the packet to the tunnel */
         int write_bytes = write(tun_fd, buf + pos, len);
-        // printf("TUN Send %d bytes\n", write_bytes);
         if (write_bytes < 0)
         {
             perror("Error while sending to tun_fd!!!");
@@ -446,7 +445,11 @@ struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned i
     memset(group->dec->marks, 1, block_num * sizeof(unsigned char));
     clock_gettime(CLOCK_REALTIME, &(group->dec->touch));
 
+    /* Init the mutex */
     pthread_mutex_init(&(group->mutex), NULL);
+
+    /* Set the touch time */
+    clock_gettime(CLOCK_REALTIME, &(group->touch));
 
     /* Add the group to the group list */
     struct list *new_group_item = (struct list *)malloc(sizeof(struct list));
