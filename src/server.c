@@ -189,7 +189,7 @@ int main(int argc, char *argv[])
             memcpy(input_p->packet, tun_buf, read_bytes);
             input_p->packet_size = read_bytes;
             input_p->udp_fd = udp_fd;
-            threadpool_add(pool, serve_input, (void *)input_p, 0);
+            threadpool_add(pool, (void *)serve_input, (void *)input_p, 0);
         }
 
         // Receive data from the client
@@ -214,7 +214,7 @@ int main(int argc, char *argv[])
             output_p->udp_addr.sin_addr.s_addr = udp_addr.sin_addr.s_addr;
             output_p->udp_addr.sin_port = udp_addr.sin_port;
 
-            threadpool_add(pool, serve_output, (void *)output_p, 0);
+            threadpool_add(pool, (void *)serve_output, (void *)output_p, 0);
             // pthread_create(&(output_p->tid), NULL, serve_output, (void *)output_p);
         }
     }
