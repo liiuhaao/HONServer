@@ -1,24 +1,25 @@
-#ifndef CODE_H
-#define CODE_H
+#ifndef FEC_H
+#define FEC_H
 
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
 #include <linux/types.h>
-#include <linux/tcp.h>
-#include <linux/udp.h>
-#include <linux/time.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include "../lib/rs.h"
 
 #define DEC_TIMEOUT ((long)1e7)
 #define ENC_TIMEOUT ((long)1e3)
-#define GROUP_TIMEOUT ((long)1e9)
+#define GROUP_TIMEOUT ((long)1e10)
 
 #define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
@@ -32,29 +33,25 @@
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) > (b)) ? (b) : (a))
 
+
+
 struct list
 {
     void *data;
     struct list *next;
 };
 
-struct address
-{
-    in_addr_t ip;
-    in_port_t port;
-};
-
 struct group
 {
     unsigned int groupID;
-
-    pthread_mutex_t mutex;
 
     struct list *udp_addrs;
     struct list *vpn_addrs;
 
     struct encoder *enc;
     struct decoder *dec;
+
+    pthread_mutex_t mutex;
 
     struct timespec touch;
 };
@@ -64,8 +61,6 @@ struct encoder
     unsigned char *packet_buf;
     unsigned int data_size;
     unsigned int packet_num;
-
-    pthread_mutex_t mutex;
 
     struct timespec touch;
 };
@@ -83,8 +78,6 @@ struct decoder
 
     unsigned char **data_blocks;
     unsigned char *marks;
-
-    pthread_mutex_t mutex;
 
     struct timespec touch;
 };
@@ -107,9 +100,9 @@ struct output_param
     unsigned int packet_size;
 
     int tun_fd;
+    int udp_fd;
 
-    in_addr_t udp_ip;
-    in_port_t udp_port;
+    struct sockaddr_in udp_addr;
 };
 
 struct enc_param
@@ -126,13 +119,15 @@ struct dec_param
 {
     pthread_t tid;
 
-    struct decoder *dec;
+    struct group *group;
 
     int tun_fd;
-
-    in_addr_t client_vpn_ip;
-    in_port_t client_vpn_port;
 };
+
+
+extern pthread_mutex_t group_list_mutex;
+extern struct list *group_iter;
+extern struct list *group_before;
 
 void *serve_input(void *args);
 void *serve_output(void *args);
@@ -140,17 +135,19 @@ void *serve_output(void *args);
 void *encode(void *args);
 void *decode(void *args);
 
-struct group *get_group(unsigned int groupID, struct address *addr, int udp_fd);
-struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num, in_addr_t udp_ip, in_port_t udp_port, struct address *addr);
+
+struct group *get_group(unsigned int groupID, struct sockaddr_in *addr, int udp_fd);
+
+struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num);
+
 void free_group(struct group *group);
 
-struct address *get_packet_addr(unsigned char *buf, int in_or_out);
+struct sockaddr_in *get_packet_addr(unsigned char *buf, int in_or_out);
+
 unsigned int get_packet_len(unsigned char *buf);
 
 unsigned int get_random_groupID();
 
-extern struct list *group_list;
-extern pthread_mutex_t group_list_mutex;
-extern struct list *group_iter;
+struct list *update_address_list(struct list *addr_list, struct sockaddr_in *addr);
 
 #endif

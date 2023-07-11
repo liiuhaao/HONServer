@@ -1,36 +1,42 @@
 #include "fec.h"
 
-struct list *group_list = NULL;
 pthread_mutex_t group_list_mutex;
 struct list *group_iter = NULL;
+struct list *group_before = NULL;
 
 /**
  * Serve incoming input packets from the TUN interface.
  *
  * @param args: Void pointer to input_param struct containing packet data and client information
  */
-void *serve_input(void *args)
+void *serve_input(void *args) // from server to client
 {
     /* Get the input parameters */
     struct input_param *param = (struct input_param *)args;
     unsigned char *packet = param->packet;
     unsigned int packet_size = param->packet_size;
+    unsigned long int tid = param->tid;
     int udp_fd = param->udp_fd;
     free(param);
 
-    struct sockaddr_in client_addr;
-    client_addr.sin_family = AF_INET;
-
-    /* Get the target address of the packet */
-    struct address *target_addr = get_packet_addr(packet, INPUT);
-
-    /* Get the group of the target address */
+    /* Get the target vpn address of the packet */
+    struct sockaddr_in *vpn_addr = get_packet_addr(packet, INPUT);
+    if (vpn_addr == NULL)
+        return;
     pthread_mutex_lock(&group_list_mutex);
-    struct group *group = get_group(NULL, target_addr, udp_fd);
+
+    /* Get the group of the target address by vpn address*/
+    struct group *group = get_group(NULL, vpn_addr, udp_fd);
+    if (group == NULL)
+    {
+        pthread_mutex_unlock(&group_list_mutex);
+        return;
+    }
+    pthread_mutex_lock(&(group->mutex));
+    pthread_mutex_unlock(&group_list_mutex);
+
     /* Get the encoder of the group */
     struct encoder *enc = group->enc;
-    pthread_mutex_lock(&(enc->mutex));
-    pthread_mutex_unlock(&group_list_mutex);
 
     /* If the encoder buffer is not full, add the packet to the buffer */
     if ((packet_size + enc->data_size) < MAX_PACKET_BUF)
@@ -66,7 +72,7 @@ void *serve_input(void *args)
         enc->data_size += packet_size;
         enc->packet_num += 1;
     }
-    pthread_mutex_unlock(&(enc->mutex));
+    pthread_mutex_unlock(&(group->mutex));
 }
 
 /**
@@ -76,13 +82,19 @@ void *serve_input(void *args)
  */
 void *serve_output(void *args) // client to server
 {
+
     /* Get the output parameters */
     struct output_param *param = (struct output_param *)args;
     unsigned char *packet = param->packet;
     unsigned int packet_size = param->packet_size;
+
+    struct sockaddr_in *udp_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+    udp_addr->sin_family = param->udp_addr.sin_family;
+    udp_addr->sin_addr.s_addr = param->udp_addr.sin_addr.s_addr;
+    udp_addr->sin_port = param->udp_addr.sin_port;
+
+    int udp_fd = param->udp_fd;
     int tun_fd = param->tun_fd;
-    in_addr_t udp_ip = param->udp_ip;
-    in_port_t udp_port = param->udp_port;
     free(param);
 
     /* Parse the HON Header */
@@ -93,21 +105,24 @@ void *serve_output(void *args) // client to server
     unsigned int block_num = be32toh(*((int *)(packet + 16)));
     unsigned int index = be32toh(*((int *)(packet + 20)));
 
-    /* Get the source address */
-    struct address *source_addr = get_packet_addr(packet + 24, OUTPUT);
+    pthread_mutex_lock(&group_list_mutex);
 
     /* Get the group by groupID */
-    pthread_mutex_lock(&group_list_mutex);
-    struct group *group = get_group(groupID, NULL, -1);
+    struct group *group = get_group(groupID, NULL, udp_fd);
+
     /* Create a new group if it does not exist */
     if (group == NULL)
     {
-        group = new_group(groupID, data_size, block_size, data_num, block_num, udp_ip, udp_port, source_addr);
+        group = new_group(groupID, data_size, block_size, data_num, block_num);
     }
+    pthread_mutex_lock(&(group->mutex));
+    pthread_mutex_unlock(&group_list_mutex);
+
+    /* Update the UDP address */
+    group->udp_addrs = update_address_list(group->udp_addrs, udp_addr);
+
     /* Get the decoder */
     struct decoder *dec = group->dec;
-    pthread_mutex_lock(&(dec->mutex));
-    pthread_mutex_unlock(&group_list_mutex);
 
     /* Check if the packet is received */
     if ((dec->marks[index]))
@@ -122,12 +137,12 @@ void *serve_output(void *args) // client to server
         if (dec->receive_num == dec->data_num)
         {
             struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
-            dec_p->dec = dec;
+            dec_p->group = group;
             dec_p->tun_fd = tun_fd;
             decode(dec_p);
         }
     }
-    pthread_mutex_unlock(&(dec->mutex));
+    pthread_mutex_unlock(&(group->mutex));
 }
 
 /**
@@ -143,10 +158,6 @@ void *encode(void *args)
     struct list *udp_addrs = enc_p->udp_addrs;
     int udp_fd = enc_p->udp_fd;
     free(enc_p);
-
-    struct sockaddr_in client_addr;
-    client_addr.sin_family = AF_INET;
-    socklen_t client_addr_len = sizeof(client_addr);
 
     /* Determine the number of blocks and the size of each block */
     unsigned int data_size = enc->data_size;
@@ -186,17 +197,14 @@ void *encode(void *args)
 
     unsigned char *buffer = (unsigned char *)malloc((24 + block_size) * sizeof(unsigned char));
     unsigned int groupID = get_random_groupID();
-    // printf("TIMEOUT: groupID=%d, data_size=%d, block_size=%d, data_num=%d, block_num=%d paraty_rate=%f\n", groupID, data_size, block_size, data_num, block_num, rate);
-
-    /* Select UDP address for sending */ /* TODO: Update the algorithm */
-    struct list *udp_record = udp_addrs;
+    struct list *udp_iter = udp_addrs;
 
     /* Send all data blocks over the network */
     for (unsigned int index = 0; index < block_num; index++)
     {
-        if (udp_record == NULL)
+        if (udp_iter == NULL)
         {
-            udp_record = udp_addrs;
+            udp_iter = udp_addrs;
         }
 
         /* Construct the HON Header */
@@ -211,19 +219,18 @@ void *encode(void *args)
         memcpy(buffer + 24, data_blocks[index], block_size);
 
         /* Select UDP address for sending */
-        struct address *addr = (struct address *)(udp_record->data);
-        client_addr.sin_addr.s_addr = addr->ip;
-        client_addr.sin_port = addr->port;
+        struct sockaddr_in *udp_addr = (struct address *)(udp_iter->data);
+        socklen_t udp_addr_len = sizeof(*udp_addr);
 
         /* Send the data block over the network */
-        int write_bytes = sendto(udp_fd, buffer, block_size + 24, 0, (const struct sockaddr *)&client_addr, client_addr_len);
-        // printf("Send %d bytes to %s:%i\n", write_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+        int write_bytes = sendto(udp_fd, buffer, block_size + 24, 0, (const struct sockaddr *)udp_addr, udp_addr_len);
+        printf("UDP %d Send %d bytes to %s:%i\n", udp_fd, write_bytes, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
         if (write_bytes < 0)
         {
             perror("Error while sendding to udp_fd!!!");
             break;
         }
-        udp_record = udp_record->next;
+        udp_iter = udp_iter->next;
     }
 
     /* Reset the encoder */
@@ -240,7 +247,8 @@ void *decode(void *args)
 {
     /* Get the decoder parameters */
     struct dec_param *dec_p = (struct dec_param *)args;
-    struct decoder *dec = dec_p->dec;
+    struct group *group = dec_p->group;
+    struct decoder *dec = group->dec;
     int tun_fd = dec_p->tun_fd;
     free(dec_p);
 
@@ -250,7 +258,7 @@ void *decode(void *args)
         reed_solomon *rs = reed_solomon_new(dec->data_num, dec->block_num - dec->data_num);
         if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, dec->block_num, dec->block_size))
         {
-            printf("Decode Error!!!");
+            // printf("Decode Error!!!");
             pthread_exit(NULL);
         }
     }
@@ -273,10 +281,16 @@ void *decode(void *args)
             perror("Error: packet len=0!!!");
             break;
         }
-        // printf("Send Packet len=%d\n", len);
+
+        /* Get the source vpn address */
+        struct sockaddr_in *vpn_addr = get_packet_addr(buf + pos, OUTPUT);
+
+        /* Update the VPN address */
+        group->vpn_addrs = update_address_list(group->vpn_addrs, vpn_addr);
 
         /* Send the packet to the tunnel */
         int write_bytes = write(tun_fd, buf + pos, len);
+        // printf("TUN Send %d bytes\n", write_bytes);
         if (write_bytes < 0)
         {
             perror("Error while sending to tun_fd!!!");
@@ -290,28 +304,33 @@ void *decode(void *args)
  * Get the group by groupID or VPN address.
  *
  * @param groupID: The groupID
- * @param addr: The VPN address
+ * @param sockaddr_in: The VPN address
  * @param udp_fd: The UDP socket file descriptor
  * @return: The group
  */
-struct group *get_group(unsigned int groupID, struct address *addr, int udp_fd)
+struct group *get_group(unsigned int groupID, struct sockaddr_in *addr, int udp_fd)
 {
+
     if (group_iter == NULL)
     {
         return NULL;
     }
+
     struct list *end_iter = group_iter;
+
     do
     {
         struct group *group = (struct group *)(group_iter->data);
+
         struct encoder *enc = group->enc;
 
         struct timespec now;
         clock_gettime(CLOCK_REALTIME, &now);
-        long time_delta = (now.tv_sec - enc->touch.tv_sec) * (long)1e9 + (now.tv_sec - enc->touch.tv_nsec);
+        long time_delta_enc = (now.tv_sec - enc->touch.tv_sec) * (long)1e9 + (now.tv_sec - enc->touch.tv_nsec);
+        long time_delta_group = (now.tv_sec - group->touch.tv_sec) * (long)1e9 + (now.tv_sec - group->touch.tv_nsec);
 
         /* If the encoder has not been used for a while, encode the packets and send them over the network. */
-        if (time_delta > ENC_TIMEOUT && !pthread_mutex_trylock(&(enc->mutex)))
+        if (time_delta_enc > ENC_TIMEOUT && !pthread_mutex_trylock(&(group->mutex)))
         {
             if (enc->data_size > 0)
             {
@@ -319,30 +338,39 @@ struct group *get_group(unsigned int groupID, struct address *addr, int udp_fd)
                 enc_p->enc = enc;
                 enc_p->udp_fd = udp_fd;
                 enc_p->udp_addrs = group->udp_addrs;
-
                 encode((void *)enc_p);
             }
-            pthread_mutex_unlock(&(enc->mutex));
+            pthread_mutex_unlock(&(group->mutex));
         }
 
         /* If the group has not been used for a while, free the group. */
-        if (time_delta > GROUP_TIMEOUT)
+        if (time_delta_group > GROUP_TIMEOUT)
         {
             struct list *next = group_iter->next;
             free_group(group);
-            group_iter = next;
+            free(group_iter);
+
+            if (group_before == group_iter)
+            {
+                group_iter = NULL;
+                group_before = NULL;
+            }
+            else
+            {
+                group_before->next = next;
+                group_iter = next;
+            }
             continue;
         }
 
         /* Find the group by VPN address */
         if (addr != NULL)
         {
-            struct list *vpn_iter = group->vpn_addrs;
+            struct list *vpn_iter = (struct list *)group->vpn_addrs;
             while (vpn_iter != NULL)
             {
-
-                struct address *vpn_addr = (struct address *)(vpn_iter->data);
-                if (vpn_addr->ip == addr->ip && vpn_addr->port == addr->port)
+                struct sockaddr_in *vpn_addr = (struct address *)(vpn_iter->data);
+                if (vpn_addr->sin_addr.s_addr == addr->sin_addr.s_addr && vpn_addr->sin_port == addr->sin_port)
                 {
                     clock_gettime(CLOCK_REALTIME, &(group->touch));
                     clock_gettime(CLOCK_REALTIME, &(group->enc->touch));
@@ -353,18 +381,18 @@ struct group *get_group(unsigned int groupID, struct address *addr, int udp_fd)
         }
 
         /* Find the group by groupID */
-        if (groupID != NULL && group->groupID == groupID)
+        else if ((group->groupID == groupID))
         {
+
             clock_gettime(CLOCK_REALTIME, &(group->touch));
             clock_gettime(CLOCK_REALTIME, &(group->dec->touch));
             return group;
         }
 
+        group_before = group_iter;
         group_iter = group_iter->next;
-        if (group_iter == NULL)
-            group_iter = group_list;
 
-    } while (group_iter != end_iter);
+    } while (group_iter != end_iter && group_iter != NULL);
 
     return NULL;
 }
@@ -375,13 +403,11 @@ struct group *get_group(unsigned int groupID, struct address *addr, int udp_fd)
  * @param groupID: The groupID
  * @param data_size: The size of the data
  * @param block_size: The size of the block
- * @param block_num: The number of the blocks
- * @param udp_ip: The UDP IP address
- * @param udp_port: The UDP port
- * @param addr: The VPN address
+ * @param data_num: The number of data blocks
+ * @param block_num: The number of blocks
  * @return: The new group
  */
-struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num, in_addr_t udp_ip, in_port_t udp_port, struct address *addr)
+struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num)
 {
     /* Create a new group */
     struct group *group = (struct group *)malloc(sizeof(struct group));
@@ -389,27 +415,19 @@ struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned i
     /* Set the groupID */
     group->groupID = groupID;
 
-    /* Set the VPN address */
-    struct address *addr = (struct address *)malloc(sizeof(struct address));
-    addr->ip = udp_ip;
-    addr->port = udp_port;
-
-    /* Set the UDP address */
+    /* Init the UDP address */
     group->udp_addrs = (struct list *)malloc(sizeof(struct list));
-    group->udp_addrs->data = addr;
-    group->udp_addrs->next = NULL;
+    group->udp_addrs = NULL;
 
-    /* Set the VPN address */
+    /* Init the VPN address */
     group->vpn_addrs = (struct list *)malloc(sizeof(struct list));
-    group->vpn_addrs->data = addr;
-    group->vpn_addrs->next = NULL;
+    group->vpn_addrs = NULL;
 
     /* Init the encoder */
     group->enc = (struct encoder *)malloc(sizeof(struct encoder));
     group->enc->packet_buf = (unsigned char *)malloc(MAX_PACKET_BUF * sizeof(unsigned char));
     group->enc->data_size = 0;
     group->enc->packet_num = 0;
-    pthread_mutex_init(&(group->enc->mutex), NULL);
     clock_gettime(CLOCK_REALTIME, &(group->enc->touch));
 
     /* Init the decoder */
@@ -424,19 +442,26 @@ struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned i
     {
         group->dec->data_blocks[i] = (unsigned char *)malloc(block_size * sizeof(unsigned char));
     }
-    group->dec->marks = (int *)malloc(block_num * sizeof(int));
-    memset(group->dec->marks, 0, block_num * sizeof(int));
-    pthread_mutex_init(&(group->dec->mutex), NULL);
+    group->dec->marks = (unsigned char *)malloc(block_num * sizeof(unsigned char));
+    memset(group->dec->marks, 1, block_num * sizeof(unsigned char));
     clock_gettime(CLOCK_REALTIME, &(group->dec->touch));
+
+    pthread_mutex_init(&(group->mutex), NULL);
 
     /* Add the group to the group list */
     struct list *new_group_item = (struct list *)malloc(sizeof(struct list));
     new_group_item->data = group;
-    new_group_item->next = group_list;
-    group_list = new_group_item;
     if (group_iter == NULL)
-        group_iter = group_list;
-
+    {
+        new_group_item->next = new_group_item;
+        group_iter = new_group_item;
+        group_before = group_iter;
+    }
+    else
+    {
+        new_group_item->next = group_iter->next;
+        group_iter->next = new_group_item;
+    }
     return group;
 }
 
@@ -468,12 +493,10 @@ void free_group(struct group *group)
     }
 
     /* Free the encoder */
-    pthread_mutex_destroy(&(group->enc->mutex));
     free(group->enc->packet_buf);
     free(group->enc);
 
     /* Free the decoder */
-    pthread_mutex_destroy(&(group->dec->mutex));
     for (int i = 0; i < group->dec->block_num; i++)
     {
         free(group->dec->data_blocks[i]);
@@ -481,6 +504,9 @@ void free_group(struct group *group)
     free(group->dec->data_blocks);
     free(group->dec->marks);
     free(group->dec);
+
+    /* Destroy the mutex */
+    pthread_mutex_destroy(&(group->mutex));
 
     /* Free the group */
     free(group);
@@ -493,7 +519,7 @@ void free_group(struct group *group)
  * @param in_or_out: INPUT or OUTPUT
  * @return: The address of the packet
  */
-struct address *get_packet_addr(unsigned char *buf, int in_or_out)
+struct sockaddr_in *get_packet_addr(unsigned char *buf, int in_or_out)
 {
     /* IP Header*/
     struct iphdr *ip_hdr = (struct iphdr *)(buf);
@@ -505,6 +531,7 @@ struct address *get_packet_addr(unsigned char *buf, int in_or_out)
     struct icmphdr *icmp_hdr;
     __be16 *source;
     __be16 *dest;
+
     if (ip_hdr->protocol == IPPROTO_TCP)
     {
         tcp_hdr = (struct tcphdr *)(buf + ip_hdr_len);
@@ -524,21 +551,25 @@ struct address *get_packet_addr(unsigned char *buf, int in_or_out)
     }
     else
     {
+        // printf("Unknown protocol\n");
         return NULL;
     }
 
-    struct address *addr = (struct address *)malloc(sizeof(struct address));
-    if (in_or_out == INPUT)
+    struct sockaddr_in *addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+
+    if (in_or_out == OUTPUT)
     {
-        addr->ip = ip_hdr->saddr;
-        addr->port = *source;
-        addr->port = htons(addr->port);
+        addr->sin_family = AF_INET;
+        addr->sin_addr.s_addr = ip_hdr->saddr;
+        addr->sin_port = *source;
+        addr->sin_port = htons(addr->sin_port);
     }
     else
     {
-        addr->ip = ip_hdr->daddr;
-        addr->port = *dest;
-        addr->port = htons(addr->port);
+        addr->sin_family = AF_INET;
+        addr->sin_addr.s_addr = ip_hdr->daddr;
+        addr->sin_port = *dest;
+        addr->sin_port = htons(addr->sin_port);
     }
     return addr;
 }
@@ -568,4 +599,31 @@ unsigned int get_random_groupID()
     srand((unsigned)(now.tv_nsec));
     groupID = groupID * rand();
     return groupID;
+}
+
+/**
+ * Update the address list if the address is not in the list.
+ *
+ * @param addr_list: The address list
+ * @param addr: The address
+ */
+struct list *update_address_list(struct list *addr_list, struct sockaddr_in *addr)
+{
+    struct list *addr_item = addr_list;
+
+    while (addr_item) // != NULL
+    {
+        struct sockaddr_in *ad = (struct sockaddr_in *)(addr_item->data);
+        if (ad->sin_addr.s_addr == addr->sin_addr.s_addr && ad->sin_port == addr->sin_port)
+        {
+            free(addr);
+            return addr_list;
+        }
+        addr_item = addr_item->next;
+    }
+
+    struct list *new_addr = (struct list *)malloc(sizeof(struct list));
+    new_addr->data = addr;
+    new_addr->next = addr_list;
+    return new_addr;
 }

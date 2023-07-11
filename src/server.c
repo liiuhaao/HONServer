@@ -146,8 +146,9 @@ int main(int argc, char *argv[])
     bzero(tun_buf, MTU);
     bzero(udp_buf, MTU);
 
-    struct sockaddr_in client_addr;
-    socklen_t client_addr_len = sizeof(client_addr);
+    struct sockaddr_in udp_addr;
+    socklen_t client_addr_len = sizeof(udp_addr);
+    printf("%u %u\n", udp_addr.sin_addr.s_addr, udp_addr.sin_port);
 
     fec_init();
     pthread_mutex_init(&group_list_mutex, NULL);
@@ -182,35 +183,38 @@ int main(int argc, char *argv[])
                 break;
             }
 
+            // printf("TUN received %d bytes\n", read_bytes);
+
             struct input_param *input_p = (struct input_param *)malloc(sizeof(struct input_param));
             input_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
             memcpy(input_p->packet, tun_buf, read_bytes);
             input_p->packet_size = read_bytes;
             input_p->udp_fd = udp_fd;
             threadpool_add(pool, serve_input, (void *)input_p, 0);
-            // pthread_create(&(input_p->tid), NULL, serve_input, (void *)input_p);
         }
 
         // Receive data from the client
         if (FD_ISSET(udp_fd, &readset))
         {
-
-            int read_bytes = recvfrom(udp_fd, udp_buf, sizeof(udp_buf), 0, (struct sockaddr *)&client_addr, &client_addr_len);
+            int read_bytes = recvfrom(udp_fd, udp_buf, sizeof(udp_buf), 0, (struct sockaddr *)&udp_addr, &client_addr_len);
             if (read_bytes < 0)
             {
                 perror("Error while reading udp_fd!!!\n");
                 break;
             }
 
-            // printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-
+            printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
+            
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
             memcpy(output_p->packet, udp_buf, read_bytes);
             output_p->packet_size = read_bytes;
             output_p->tun_fd = tun_fd;
-            output_p->udp_ip = client_addr.sin_addr.s_addr;
-            output_p->udp_port = client_addr.sin_port;
+            output_p->udp_fd = udp_fd;
+            output_p->udp_addr.sin_family = udp_addr.sin_family;
+            output_p->udp_addr.sin_addr.s_addr = udp_addr.sin_addr.s_addr;
+            output_p->udp_addr.sin_port = udp_addr.sin_port;
+
             threadpool_add(pool, serve_output, (void *)output_p, 0);
             // pthread_create(&(output_p->tid), NULL, serve_output, (void *)output_p);
         }
