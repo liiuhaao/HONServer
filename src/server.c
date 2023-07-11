@@ -148,7 +148,6 @@ int main(int argc, char *argv[])
 
     struct sockaddr_in udp_addr;
     socklen_t client_addr_len = sizeof(udp_addr);
-    printf("%u %u\n", udp_addr.sin_addr.s_addr, udp_addr.sin_port);
 
     fec_init();
     pthread_mutex_init(&group_list_mutex, NULL);

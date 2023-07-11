@@ -22,15 +22,15 @@ void *serve_input(void *args) // from server to client
     /* Get the target vpn address of the packet */
     struct sockaddr_in *vpn_addr = get_packet_addr(packet, INPUT);
     if (vpn_addr == NULL)
-        return;
+        return NULL;
     pthread_mutex_lock(&group_list_mutex);
 
     /* Get the group of the target address by vpn address*/
-    struct group *group = get_group(NULL, vpn_addr, udp_fd);
+    struct group *group = get_group(-1, vpn_addr, udp_fd);
     if (group == NULL)
     {
         pthread_mutex_unlock(&group_list_mutex);
-        return;
+        return NULL;
     }
     pthread_mutex_lock(&(group->mutex));
     pthread_mutex_unlock(&group_list_mutex);
@@ -219,7 +219,7 @@ void *encode(void *args)
         memcpy(buffer + 24, data_blocks[index], block_size);
 
         /* Select UDP address for sending */
-        struct sockaddr_in *udp_addr = (struct address *)(udp_iter->data);
+        struct sockaddr_in *udp_addr = (struct sockaddr_in *)(udp_iter->data);
         socklen_t udp_addr_len = sizeof(*udp_addr);
 
         /* Send the data block over the network */
@@ -369,7 +369,7 @@ struct group *get_group(unsigned int groupID, struct sockaddr_in *addr, int udp_
             struct list *vpn_iter = (struct list *)group->vpn_addrs;
             while (vpn_iter != NULL)
             {
-                struct sockaddr_in *vpn_addr = (struct address *)(vpn_iter->data);
+                struct sockaddr_in *vpn_addr = (struct sockaddr_in *)(vpn_iter->data);
                 if (vpn_addr->sin_addr.s_addr == addr->sin_addr.s_addr && vpn_addr->sin_port == addr->sin_port)
                 {
                     clock_gettime(CLOCK_REALTIME, &(group->touch));
