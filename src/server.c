@@ -151,6 +151,8 @@ int main(int argc, char *argv[])
 
     fec_init();
     pthread_mutex_init(&group_list_mutex, NULL);
+    pthread_mutex_init(&rx_mutex, NULL);
+    pthread_mutex_init(&tx_mutex, NULL);
 
     threadpool_t *pool;
     assert((pool = threadpool_create(THREAD, QUEUE, 0)) != NULL);

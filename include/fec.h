@@ -17,23 +17,22 @@
 #include <netinet/in.h>
 #include "../lib/rs.h"
 
-#define DEC_TIMEOUT ((long)1e7)
-#define ENC_TIMEOUT ((long)1e3)
+#define DEC_TIMEOUT ((long)1e6)
+#define ENC_TIMEOUT ((long)1e5)
 #define GROUP_TIMEOUT ((long)1e10)
 
 #define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
 #define MAX_PACKET_BUF MAX_BLOCK_SIZE *MAX_DATA_NUM // 46336
 #define MAX_PACKET_NUM 10
-#define PARITY_RATE 0
+#define PARITY_RATE 20
+#define RX_MAX_NUM 50
 
 #define INPUT 1
 #define OUTPUT 0
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) > (b)) ? (b) : (a))
-
-
 
 struct list
 {
@@ -82,6 +81,13 @@ struct decoder
     struct timespec touch;
 };
 
+struct rx_packet
+{
+    unsigned int id;
+    unsigned char *packet;
+    unsigned int packet_len;
+};
+
 struct input_param
 {
     pthread_t tid;
@@ -124,10 +130,17 @@ struct dec_param
     int tun_fd;
 };
 
-
 extern pthread_mutex_t group_list_mutex;
 extern struct list *group_iter;
 extern struct list *group_before;
+
+extern struct list *rx_list;
+extern unsigned int rx_num;
+extern unsigned int rx_id;
+extern pthread_mutex_t rx_mutex;
+
+extern unsigned int tx_id;
+extern pthread_mutex_t tx_mutex;
 
 void *serve_input(void *args);
 void *serve_output(void *args);
@@ -135,6 +148,7 @@ void *serve_output(void *args);
 void *encode(void *args);
 void *decode(void *args);
 
+void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int groupId);
 
 struct group *get_group(unsigned int groupID, struct sockaddr_in *addr, int udp_fd);
 
@@ -146,7 +160,7 @@ struct sockaddr_in *get_packet_addr(unsigned char *buf, int in_or_out);
 
 unsigned int get_packet_len(unsigned char *buf);
 
-unsigned int get_random_groupID();
+unsigned int get_groupId();
 
 struct list *update_address_list(struct list *addr_list, struct sockaddr_in *addr);
 

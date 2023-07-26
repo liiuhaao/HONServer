@@ -4,6 +4,14 @@ pthread_mutex_t group_list_mutex;
 struct list *group_iter = NULL;
 struct list *group_before = NULL;
 
+struct list *rx_list = NULL;
+unsigned int rx_num = 0;
+unsigned int rx_id = 0;
+pthread_mutex_t rx_mutex;
+
+unsigned int tx_id = 0;
+pthread_mutex_t tx_mutex;
+
 /**
  * Serve incoming input packets from the TUN interface.
  *
@@ -105,7 +113,6 @@ void *serve_output(void *args) // client to server
     unsigned int block_num = be32toh(*((int *)(packet + 16)));
     unsigned int index = be32toh(*((int *)(packet + 20)));
 
-
     /* Get the group by groupID */
     pthread_mutex_lock(&group_list_mutex);
     struct group *group = get_group(groupID, NULL, udp_fd);
@@ -120,6 +127,26 @@ void *serve_output(void *args) // client to server
 
     /* Update the UDP address */
     group->udp_addrs = update_address_list(group->udp_addrs, udp_addr);
+
+    /* Get udp_addr nums, and print every addr*/
+    int udp_addr_num = 0;
+    struct list *udp_addr_iter = group->udp_addrs;
+    while (udp_addr_iter != NULL)
+    {
+        udp_addr_num++;
+        udp_addr_iter = udp_addr_iter->next;
+    }
+    udp_addr_iter = group->udp_addrs;
+    printf("udp_addr_num: %d {", udp_addr_num);
+    for (int i = 0; i < udp_addr_num; i++)
+    {
+        if (i != 0)
+            printf(", ");
+        struct sockaddr_in *udp_addr = (struct sockaddr_in *)(udp_addr_iter->data);
+        printf("udp_addr: %s:%i", inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
+        udp_addr_iter = udp_addr_iter->next;
+    }
+    printf("}\n");
 
     /* Get the decoder */
     struct decoder *dec = group->dec;
@@ -196,7 +223,7 @@ void *encode(void *args)
     }
 
     unsigned char *buffer = (unsigned char *)malloc((24 + block_size) * sizeof(unsigned char));
-    unsigned int groupID = get_random_groupID();
+    unsigned int groupID = get_groupId();
     struct list *udp_iter = udp_addrs;
 
     /* Send all data blocks over the network */
@@ -289,14 +316,108 @@ void *decode(void *args)
         group->vpn_addrs = update_address_list(group->vpn_addrs, vpn_addr);
 
         /* Send the packet to the tunnel */
-        int write_bytes = write(tun_fd, buf + pos, len);
+        rx_insert(tun_fd, buf + pos, len, group->groupID);
+        pos += len;
+    }
+    free(buf);
+}
+
+/**
+ * Insert and sort the received packets.
+ *
+ * @param tun_fd: The tunnel file descriptor
+ * @param buf: The packet buffer
+ * @param len: The length of the packet
+ * @param groupId: The groupID
+ */
+void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int groupId)
+{
+    pthread_mutex_lock(&rx_mutex);
+    struct rx_packet *rx = (struct rx_packet *)malloc(sizeof(struct rx_packet));
+    rx->id = groupId;
+    rx->packet = (unsigned char *)malloc(len * sizeof(unsigned char));
+    rx->packet_len = len;
+    memcpy(rx->packet, buf, len);
+
+    struct list *new_rx_item = (struct list *)malloc(sizeof(struct list));
+    new_rx_item->data = rx;
+
+    if (rx_list == NULL)
+    {
+        new_rx_item->next = NULL;
+        rx_list = new_rx_item;
+    }
+    else
+    {
+        if (((struct rx_packet *)(rx_list->data))->id > groupId)
+        {
+            new_rx_item->next = rx_list;
+            rx_list = new_rx_item;
+        }
+        else
+        {
+            struct list *rx_iter = rx_list;
+            while (rx_iter->next != NULL)
+            {
+                if (((struct rx_packet *)(rx_iter->next->data))->id > groupId)
+                    break;
+                rx_iter = rx_iter->next;
+            }
+            new_rx_item->next = rx_iter->next;
+            rx_iter->next = new_rx_item;
+        }
+    }
+
+    rx_num++;
+
+    /* Check if the packet at the head of the list can be sent to the tunnel or the rx_list is full */
+    while (rx_list != NULL || rx_num > RX_MAX_NUM)
+    {
+        struct rx_packet *rx = (struct rx_packet *)(rx_list->data);
+
+        if (rx_num < RX_MAX_NUM && rx_id != rx->id && rx_id < rx->id - 1)
+            break;
+
+        printf("TUN send %d bytes. groupId=%u\n", rx->packet_len, rx->id);
+        int write_bytes = write(tun_fd, rx->packet, rx->packet_len);
         if (write_bytes < 0)
         {
             perror("Error while sending to tun_fd!!!");
         }
-        pos += len;
+        rx_id = rx->id;
+        struct list *next = rx_list->next;
+        free(rx->packet);
+        free(rx);
+        free(rx_list);
+        rx_list = next;
+        rx_num--;
     }
-    free(buf);
+    if (rx_num > 0)
+    {
+        printf("Left %d packets in rx_list: ", rx_num);
+        printf("rx_id= %d. left_id={", rx_id);
+        struct list *rx_iter = rx_list;
+        unsigned int left_id = rx_id;
+        unsigned int left_num = rx_num;
+        while (rx_iter != NULL)
+        {
+            struct rx_packet *rx = (struct rx_packet *)(rx_iter->data);
+            if (rx->id != left_id)
+            {
+                if (left_id != rx_id)
+                    printf("%u*%u,", left_id, left_num);
+                left_id = rx->id;
+                left_num = 1;
+            }
+            else
+            {
+                left_num++;
+            }
+            rx_iter = rx_iter->next;
+        }
+        printf("}\n");
+    }
+    pthread_mutex_unlock(&rx_mutex);
 }
 
 /**
@@ -590,17 +711,15 @@ unsigned int get_packet_len(unsigned char *buf)
 }
 
 /**
- * Get a random groupID.
+ * Get groupID.
  *
  */
-unsigned int get_random_groupID()
+unsigned int get_groupId()
 {
-    struct timespec now;
-    clock_gettime(CLOCK_REALTIME, &now);
-    srand((unsigned)(now.tv_sec));
-    unsigned int groupID = rand();
-    srand((unsigned)(now.tv_nsec));
-    groupID = groupID * rand();
+    pthread_mutex_lock(&tx_mutex);
+    unsigned int groupID = tx_id;
+    tx_id++;
+    pthread_mutex_unlock(&tx_mutex);
     return groupID;
 }
 
