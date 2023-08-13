@@ -1,5 +1,7 @@
 #include "server.h"
 
+int tun_fd, udp_fd, tcp_fd;
+
 /**
  * Create a TUN interface with the specified name, IP and MTU.
  *
@@ -52,7 +54,7 @@ int bind_udp(char *server_ip, int server_port)
     int udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_fd < 0)
     {
-        perror("Error while creating socket!!!\n");
+        perror("Error while creating udp socket!!!\n");
         exit(1);
     }
 
@@ -73,6 +75,50 @@ int bind_udp(char *server_ip, int server_port)
     // Listen for incoming packets
     printf("UDP %d is binded on: %s:%d\n", udp_fd, server_ip, server_port);
     return udp_fd;
+}
+
+/**
+ * Creates a TCP socket and binds it to the specified IP and port.
+ *
+ * @param server_ip IP address to bind the TCP socket to
+ * @param server_port Port to bind the TCP socket to
+ * @return The file descriptor of the bound TCP socket
+ */
+int bind_tcp(char *server_ip, int server_port)
+{
+    // Create a socket for UDP communication
+    int tcp_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (tcp_fd < 0)
+    {
+        perror("Error while creating tcp socket!!!\n");
+        exit(1);
+    }
+
+    // Set SO_REUSEADDR option
+    int yes = 1;
+    if (setsockopt(tcp_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
+    {
+        perror("Error while setting socket option SO_REUSEADDR!!!\n");
+        exit(1);
+    }
+
+    // Set up the server address information for binding
+    struct sockaddr_in server_addr;
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(server_port);
+    server_addr.sin_addr.s_addr = inet_addr(server_ip);
+
+    // Bind the socket to the server address
+    if (bind(tcp_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        fprintf(stderr, "Error while binding to %s:%d!!!\n", server_ip, server_port);
+        exit(1);
+    }
+
+    // Listen for incoming packets
+    printf("TCP %d is binded on: %s:%d\n", tcp_fd, server_ip, server_port);
+    return tcp_fd;
 }
 
 /**
@@ -127,7 +173,14 @@ void run(char *cmd)
 void signal_handler(int sig)
 {
     printf("\n");
+
+    clean_all_group();
+    clean_all_rx();
     cleanup_iptables();
+
+    close(tun_fd);
+    close(udp_fd);
+    close(tcp_fd);
 
     printf("Bye!!!\n");
     exit(0);
@@ -136,18 +189,28 @@ void signal_handler(int sig)
 int main(int argc, char *argv[])
 {
 
-    int tun_fd = allocate_tun(TUN_NAME, TUN_IP, MTU);
-    int udp_fd = bind_udp(SERVER_IP, SERVER_PORT);
+    tun_fd = allocate_tun(TUN_NAME, TUN_IP, MTU);
+    udp_fd = bind_udp(SERVER_IP, SERVER_PORT);
+    tcp_fd = bind_tcp(SERVER_IP, SYNC_PORT);
+
+    if (listen(tcp_fd, 5) < 0)
+    {
+        perror("listen");
+        return 1;
+    }
 
     setup_iptables();
     signal(SIGINT, signal_handler);
 
-    unsigned char tun_buf[MTU], udp_buf[MTU];
+    unsigned char tun_buf[MTU], udp_buf[MTU], tcp_buf[MTU];
     bzero(tun_buf, MTU);
     bzero(udp_buf, MTU);
 
     struct sockaddr_in udp_addr;
-    socklen_t client_addr_len = sizeof(udp_addr);
+    socklen_t udp_addr_len = sizeof(udp_addr);
+
+    struct sockaddr_in tcp_addr;
+    socklen_t tcp_addr_len = sizeof(tcp_addr);
 
     fec_init();
     pthread_mutex_init(&group_list_mutex, NULL);
@@ -166,7 +229,8 @@ int main(int argc, char *argv[])
         FD_ZERO(&readset);
         FD_SET(tun_fd, &readset);
         FD_SET(udp_fd, &readset);
-        int max_fd = max(tun_fd, udp_fd) + 1;
+        FD_SET(tcp_fd, &readset);
+        int max_fd = max(max(tun_fd, udp_fd), tcp_fd) + 1;
 
         if (-1 == select(max_fd, &readset, NULL, NULL, NULL))
         {
@@ -174,7 +238,42 @@ int main(int argc, char *argv[])
             break;
         }
 
-        // Receive data from the remote
+        /* Receive config from the client */
+        if (FD_ISSET(tcp_fd, &readset))
+        {
+            int client_fd = accept(tcp_fd, (struct sockaddr *)&tcp_addr, &tcp_addr_len);
+
+            if (client_fd < 0)
+            {
+                perror("Accept failed");
+            }
+            else
+            {
+                int bytes_read = read(client_fd, tcp_buf, sizeof(tcp_buf) - 1);
+                if (bytes_read < 0)
+                {
+                    perror("Read failed");
+                }
+                else
+                {
+                    tcp_buf[bytes_read] = '\0';
+                    printf("Syncing config: %s\n", tcp_buf);
+                    parse_config(tcp_buf, &config);
+
+                    printf("------------------------------------------\n");
+
+                    char config_str[1024];
+                    serialize_config(&config, config_str);
+                    printf("Synced Config: %s\n", config_str);
+
+                    /* Send response */
+                    const char *response = "200";
+                    write(client_fd, response, strlen(response));
+                }
+            }
+        }
+
+        /* Receive data from the remote */
         if (FD_ISSET(tun_fd, &readset))
         {
             int read_bytes = read(tun_fd, tun_buf, MTU);
@@ -194,18 +293,18 @@ int main(int argc, char *argv[])
             threadpool_add(pool, (void *)serve_input, (void *)input_p, 0);
         }
 
-        // Receive data from the client
+        /* Receive data from the client */
         if (FD_ISSET(udp_fd, &readset))
         {
-            int read_bytes = recvfrom(udp_fd, udp_buf, sizeof(udp_buf), 0, (struct sockaddr *)&udp_addr, &client_addr_len);
+            int read_bytes = recvfrom(udp_fd, udp_buf, sizeof(udp_buf), 0, (struct sockaddr *)&udp_addr, &udp_addr_len);
             if (read_bytes < 0)
             {
                 perror("Error while reading udp_fd!!!\n");
                 break;
             }
 
-            printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
-            
+            // printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
+
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
             memcpy(output_p->packet, udp_buf, read_bytes);

@@ -21,9 +21,11 @@
 #include "../lib/rs.h"
 #include "../lib/threadpool.h"
 #include "fec.h"
+#include "config.h"
 
 #define SERVER_IP "0.0.0.0"
 #define SERVER_PORT 54345
+#define SYNC_PORT 34543
 
 #define INTERFACE_NAME "eth0"
 #define TUN_NAME "tun0"
@@ -35,6 +37,8 @@
 int allocate_tun(char *tun_name, char *tun_ip, int mtu);
 
 int bind_udp(char *server_ip, int server_port);
+
+int bind_tcp(char *server_ip, int server_port);
 
 void signal_handler(int sig);
 

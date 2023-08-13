@@ -15,18 +15,20 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/time.h>
 #include "../lib/rs.h"
+#include "config.h"
 
-#define DEC_TIMEOUT ((long)1e6)
-#define ENC_TIMEOUT ((long)1e5)
+// #define DEC_TIMEOUT ((long)1e8)
+// #define ENC_TIMEOUT ((long)1e8)
 #define GROUP_TIMEOUT ((long)1e10)
 
 #define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
 #define MAX_PACKET_BUF MAX_BLOCK_SIZE *MAX_DATA_NUM // 46336
-#define MAX_PACKET_NUM 10
-#define PARITY_RATE 20
-#define RX_MAX_NUM 50
+// #define MAX_PACKET_NUM 10
+// #define PARITY_RATE 100
+// #define RX_MAX_NUM 10
 
 #define INPUT 1
 #define OUTPUT 0
@@ -40,11 +42,23 @@ struct list
     struct list *next;
 };
 
+struct time_pair{
+    long packet_send;
+    struct timespec packet_receive;
+};
+
+struct udp_info
+{
+    struct sockaddr_in *addr;
+    struct list *time_head;
+    struct list *time_tail;
+};
+
 struct group
 {
     unsigned int groupID;
 
-    struct list *udp_addrs;
+    struct list *udp_infos;
     struct list *vpn_addrs;
 
     struct encoder *enc;
@@ -86,6 +100,8 @@ struct rx_packet
     unsigned int id;
     unsigned char *packet;
     unsigned int packet_len;
+
+    struct timespec touch;
 };
 
 struct input_param
@@ -116,7 +132,7 @@ struct enc_param
     pthread_t tid;
 
     struct encoder *enc;
-    struct list *udp_addrs;
+    struct list *udp_infos;
 
     int udp_fd;
 };
@@ -150,11 +166,15 @@ void *decode(void *args);
 
 void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int groupId);
 
+void clean_all_rx();
+
 struct group *get_group(unsigned int groupID, struct sockaddr_in *addr, int udp_fd);
 
 struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num);
 
 void free_group(struct group *group);
+
+void clean_all_group();
 
 struct sockaddr_in *get_packet_addr(unsigned char *buf, int in_or_out);
 
@@ -162,6 +182,9 @@ unsigned int get_packet_len(unsigned char *buf);
 
 unsigned int get_groupId();
 
-struct list *update_address_list(struct list *addr_list, struct sockaddr_in *addr);
+
+struct list *update_udp_info_list(struct list *udp_info_list, struct udp_info *udp_info);
+
+struct list *update_vpn_address_list(struct list *addr_list, struct sockaddr_in *addr);
 
 #endif
