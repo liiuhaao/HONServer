@@ -35,16 +35,16 @@ void *serve_input(void *args) // from server to client
     udp_addr->sin_port = param->udp_addr.sin_port;
     free(param);
 
-    socklen_t client_addr_len = sizeof(*udp_addr);
-    int write_bytes = sendto(udp_fd, packet, packet_size, 0, (const struct sockaddr *)udp_addr, client_addr_len);
-    printf("UDP %d send %d bytes to %s:%i\n", udp_fd, packet_size, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
-    if (write_bytes < 0)
-    {
-        perror("Error while sending to udp_fd!!!");
-    }
-    free(udp_addr);
-    free(packet);
-    return NULL;
+    // socklen_t client_addr_len = sizeof(*udp_addr);
+    // int write_bytes = sendto(udp_fd, packet, packet_size, 0, (const struct sockaddr *)udp_addr, client_addr_len);
+    // printf("UDP %d send %d bytes to %s:%i\n", udp_fd, packet_size, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
+    // if (write_bytes < 0)
+    // {
+    //     perror("Error while sending to udp_fd!!!");
+    // }
+    // free(udp_addr);
+    // free(packet);
+    // return NULL;
 
     /* Get the target vpn address of the packet */
     struct sockaddr_in *vpn_addr = get_packet_addr(packet, INPUT);
@@ -53,7 +53,7 @@ void *serve_input(void *args) // from server to client
 
     /* Get the encoder */
     pthread_mutex_lock(&encoder_list_mutex);
-    struct encoder *enc = get_encoder(NULL, vpn_addr);
+    struct encoder *enc = get_encoder(NULL, vpn_addr, udp_fd);
     if (enc == NULL)
     {
         pthread_mutex_unlock(&encoder_list_mutex);
@@ -62,24 +62,33 @@ void *serve_input(void *args) // from server to client
     pthread_mutex_lock(&(enc->mutex));
     pthread_mutex_unlock(&encoder_list_mutex);
 
+    /* If packet reaches MAX_PACKET_BUF, encode the packets and send them over the network*/
+    if (packet_size + enc->data_size > MAX_PACKET_BUF)
+    {
+        struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
+        enc_p->enc = enc;
+        enc_p->udp_fd = udp_fd;
+        encode((void *)enc_p);
+    }
+
     /* Add the packet to the encoder buffer */
     memcpy(enc->packet_buf + enc->data_size, packet, packet_size);
     free(packet);
     enc->data_size += packet_size;
     enc->packet_num += 1;
-    // printf("Encoded packet, packet_num: %d\n", enc->packet_num);
+
     if (enc->packet_num == 1)
+    {
+        clock_gettime(CLOCK_REALTIME, &(enc->touch));
+    }
+
+    /* If packet reaches the config.max_TX_num, encode the packets and send them over the network*/
+    if (enc->packet_num >= config.max_TX_num)
     {
         struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
         enc_p->enc = enc;
         enc_p->udp_fd = udp_fd;
-        threadpool_add(pool, (void *)encode, (void *)enc_p, 0);
-    }
-
-    /* If packet reaches the maximum, encode the packets and send them over the network*/
-    if (enc->packet_num >= config.max_TX_num || (packet_size + enc->data_size) > MAX_PACKET_BUF)
-    {
-        pthread_cond_signal(&(enc->cond));
+        encode((void *)enc_p);
     }
     pthread_mutex_unlock(&(enc->mutex));
 }
@@ -178,6 +187,7 @@ void *serve_output(void *args)
             struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
             dec_p->dec = dec;
             dec_p->tun_fd = tun_fd;
+            dec_p->udp_fd = udp_fd;
             threadpool_add(pool, (void *)decode, (void *)dec_p, 0);
         }
     }
@@ -203,14 +213,8 @@ void *encode(void *args)
     int udp_fd = enc_p->udp_fd;
     free(enc_p);
 
-    /* Wait for the packets */
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += config.encode_timeout / 1000;
-    ts.tv_nsec += (config.encode_timeout % 1000) * 1000;
-    pthread_mutex_lock(&(enc->mutex));
-    pthread_cond_timedwait(&enc->cond, &enc->mutex, &ts);
-
+    if (enc->packet_num <= 0)
+        return NULL;
     printf("Encode %d packets\n", enc->packet_num);
 
     /* Determine the number of blocks and the size of each block */
@@ -318,7 +322,7 @@ void *encode(void *args)
         socklen_t udp_addr_len = sizeof(*udp_addr);
 
         /* Send the data block over the network */
-        printf("UDP %d try to send bytes to %s:%i\n", udp_fd, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
+        // printf("UDP %d try to send bytes to %s:%i\n", udp_fd, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
         int write_bytes = sendto(udp_fd, buffer, block_size + pos, 0, (const struct sockaddr *)udp_addr, udp_addr_len);
         printf("UDP %d Send %d bytes to %s:%i\n", udp_fd, write_bytes, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
         if (write_bytes < 0)
@@ -347,9 +351,10 @@ void *decode(void *args)
     // struct group *group = dec_p->group;
     struct decoder *dec = dec_p->dec;
     int tun_fd = dec_p->tun_fd;
+    int udp_fd = dec_p->udp_fd;
     free(dec_p);
 
-    print_udp_infos(dec->udp_infos);
+    // print_udp_infos(dec->udp_infos);
 
     /* Decode the data blocks if necessary */
     if (dec->block_num > dec->data_num)
@@ -371,7 +376,7 @@ void *decode(void *args)
 
     /* Get the encoder */
     pthread_mutex_lock(&encoder_list_mutex);
-    struct encoder *enc = get_encoder(dec->udp_infos, NULL);
+    struct encoder *enc = get_encoder(dec->udp_infos, NULL, udp_fd);
     if (enc == NULL)
     {
         enc = new_encoder(dec->udp_infos);
@@ -578,7 +583,7 @@ void clean_all_rx()
     pthread_mutex_unlock(&rx_mutex);
 }
 
-struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr)
+struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr, int udp_fd)
 {
     if (encoder_list == NULL)
     {
@@ -591,7 +596,7 @@ struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr
     while (encoder_iter->next != NULL)
     {
         /* Get the encoder */
-        struct encoder *enc = (struct encoder *)(encoder_list->data);
+        struct encoder *enc = (struct encoder *)(encoder_iter->data);
 
         /* Check if the udp_infos match */
         if (udp_infos != NULL && res_enc == NULL)
@@ -607,7 +612,6 @@ struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr
                     struct sockaddr_in *udp_addr = ((struct udp_info *)(udp_iter->data))->addr;
                     if (enc_udp_addr->sin_addr.s_addr == udp_addr->sin_addr.s_addr && enc_udp_addr->sin_port == udp_addr->sin_port)
                     {
-                        clock_gettime(CLOCK_REALTIME, &(enc->touch));
                         res_enc = enc;
                         break;
                     }
@@ -625,25 +629,40 @@ struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr
         if (vpn_addr != NULL && res_enc == NULL)
         {
             struct list *enc_vpn_iter = enc->vpn_addrs;
+            struct list *enc_vpn_before = NULL;
             while (enc_vpn_iter != NULL)
             {
                 struct sockaddr_in *enc_vpn_addr = ((struct sockaddr_in *)(enc_vpn_iter->data));
 
                 if (enc_vpn_addr->sin_addr.s_addr == vpn_addr->sin_addr.s_addr && enc_vpn_addr->sin_port == vpn_addr->sin_port)
                 {
-                    clock_gettime(CLOCK_REALTIME, &(enc->touch));
                     res_enc = enc;
                     break;
                 }
+                enc_vpn_before = enc_vpn_iter;
                 enc_vpn_iter = enc_vpn_iter->next;
             }
         }
 
-        /* Check if the udp is time to die */
+        /* Compute the time delta */
         struct timespec now;
         clock_gettime(CLOCK_REALTIME, &now);
         long time_delta = (now.tv_sec - enc->touch.tv_sec) * (long)1e9 + (now.tv_nsec - enc->touch.tv_nsec);
-        if (time_delta > UDP_TIMEOUT && pthread_mutex_trylock(&enc->mutex))
+
+        if (time_delta > config.encode_timeout * 1000 && enc->packet_num > 0)
+        {
+            if ((pthread_mutex_trylock(&enc->mutex)) == 0)
+            {
+                struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
+                enc_p->enc = enc;
+                enc_p->udp_fd = udp_fd;
+                encode((void *)enc_p);
+                pthread_mutex_unlock(&(enc->mutex));
+            }
+        }
+
+        /* Check if the udp is time to die */
+        if (time_delta > UDP_TIMEOUT && (pthread_mutex_trylock(&enc->mutex)) == 0)
         {
             pthread_mutex_unlock(&enc->mutex);
             if (encoder_before == NULL)
@@ -668,7 +687,7 @@ struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr
     /* If the encoder is found, update info */
     if (res_enc != NULL)
     {
-        clock_gettime(CLOCK_REALTIME, &(res_enc->touch));
+        // clock_gettime(CLOCK_REALTIME, &(res_enc->touch));
         if (udp_infos != NULL)
         {
             struct list *udp_iter = udp_infos;
@@ -693,7 +712,6 @@ struct encoder *new_encoder(struct list *udp_infos)
     enc->udp_infos = udp_infos;
     enc->vpn_addrs = NULL;
 
-    pthread_cond_init(&(enc->cond), NULL);
     pthread_mutex_init(&(enc->mutex), NULL);
 
     clock_gettime(CLOCK_REALTIME, &(enc->touch));

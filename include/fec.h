@@ -22,7 +22,7 @@
 
 // #define DEC_TIMEOUT ((long)1e8)
 // #define ENC_TIMEOUT ((long)1e8)
-#define UDP_TIMEOUT ((long)1e9)
+#define UDP_TIMEOUT ((long)1e11)
 
 #define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
@@ -79,7 +79,6 @@ struct encoder
     struct list *udp_infos;
     struct list *vpn_addrs;
 
-    pthread_cond_t cond;
     pthread_mutex_t mutex;
 
     struct timespec touch;
@@ -159,6 +158,7 @@ struct dec_param
     struct decoder *dec;
 
     int tun_fd;
+    int udp_fd;
 };
 
 extern pthread_mutex_t decoder_list_mutex;
@@ -181,7 +181,6 @@ void *serve_output(void *args);
 void *encode(void *args);
 void *decode(void *args);
 
-
 void print_udp_infos(struct list *udp_infos);
 
 void print_rx();
@@ -190,7 +189,7 @@ void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int gr
 
 void clean_all_rx();
 
-struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr);
+struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr, int udp_fd);
 
 struct decoder *get_decoder(unsigned int groupID);
 
