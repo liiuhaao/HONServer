@@ -228,7 +228,7 @@ int main(int argc, char *argv[])
     config.max_RX_num = 100;
     config.max_TX_num = 10;
     config.encode_timeout = 1000;
-    config.decode_timeout = 10000;
+    config.decode_timeout = 1000000;
     config.rx_timeout = 1000;
 
     while (1)

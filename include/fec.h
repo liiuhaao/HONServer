@@ -103,10 +103,8 @@ struct decoder
 
     struct list *udp_infos;
 
-    int signaled;
-
-    pthread_cond_t cond;
     pthread_mutex_t mutex;
+    struct timespec touch;
 };
 
 struct rx_packet
@@ -164,12 +162,10 @@ struct dec_param
 };
 
 extern pthread_mutex_t decoder_list_mutex;
-extern struct list *decoder_iter;
-extern struct list *decoder_before;
+extern struct list *decoder_list;
 
 extern pthread_mutex_t encoder_list_mutex;
-extern struct list *encoder_iter;
-extern struct list *encoder_before;
+extern struct list *encoder_list;
 
 extern struct list *rx_list;
 extern unsigned int rx_num;

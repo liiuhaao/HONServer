@@ -1,13 +1,10 @@
 #include "fec.h"
 
 pthread_mutex_t decoder_list_mutex;
-struct list *decoder_iter = NULL;
-struct list *decoder_before = NULL;
-unsigned int decoder_num = 0;
+struct list *decoder_list = NULL;
 
 pthread_mutex_t encoder_list_mutex;
-struct list *encoder_iter = NULL;
-struct list *encoder_before = NULL;
+struct list *encoder_list = NULL;
 
 struct list *rx_list = NULL;
 unsigned int rx_num = 0;
@@ -40,7 +37,7 @@ void *serve_input(void *args) // from server to client
 
     socklen_t client_addr_len = sizeof(*udp_addr);
     int write_bytes = sendto(udp_fd, packet, packet_size, 0, (const struct sockaddr *)udp_addr, client_addr_len);
-    printf("UDP %d  send %d bytes to %s:%i\n", udp_fd, packet_size, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
+    printf("UDP %d send %d bytes to %s:%i\n", udp_fd, packet_size, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
     if (write_bytes < 0)
     {
         perror("Error while sending to udp_fd!!!");
@@ -144,11 +141,6 @@ void *serve_output(void *args)
     if (dec == NULL)
     {
         dec = new_decoder(groupID, data_size, block_size, data_num, block_num);
-
-        struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
-        dec_p->dec = dec;
-        dec_p->tun_fd = tun_fd;
-        threadpool_add(pool, (void *)decode, (void *)dec_p, 0);
     }
     pthread_mutex_lock(&(dec->mutex));
     pthread_mutex_unlock(&decoder_list_mutex);
@@ -183,8 +175,10 @@ void *serve_output(void *args)
         /* Decode the data blocks if enough blocks are received */
         if (dec->receive_num == dec->data_num)
         {
-            dec->signaled++;
-            pthread_cond_signal(&(dec->cond));
+            struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
+            dec_p->dec = dec;
+            dec_p->tun_fd = tun_fd;
+            threadpool_add(pool, (void *)decode, (void *)dec_p, 0);
         }
     }
 
@@ -355,99 +349,74 @@ void *decode(void *args)
     int tun_fd = dec_p->tun_fd;
     free(dec_p);
 
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += config.decode_timeout / 1000;
-    ts.tv_nsec += (config.decode_timeout % 1000) * 1000;
-    pthread_mutex_lock(&(dec->mutex));
+    print_udp_infos(dec->udp_infos);
 
-    while (1)
+    /* Decode the data blocks if necessary */
+    if (dec->block_num > dec->data_num)
     {
-        if (dec->signaled)
+        reed_solomon *rs = reed_solomon_new(dec->data_num, dec->block_num - dec->data_num);
+        if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, dec->block_num, dec->block_size))
         {
-            if (dec->signaled == 2)
-            {
-                continue;
-            }
-            dec->signaled = 2;
-            /* Decode the data blocks if necessary */
-            if (dec->block_num > dec->data_num)
-            {
-                reed_solomon *rs = reed_solomon_new(dec->data_num, dec->block_num - dec->data_num);
-                if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, dec->block_num, dec->block_size))
-                {
-                    perror("Error while decoding!!!");
-                    continue;
-                }
-            }
-
-            /* Combine the data blocks */
-            unsigned char *buf = (unsigned char *)malloc((dec->data_num) * (dec->block_size) * sizeof(unsigned char));
-            for (int i = 0; i < dec->data_num; i++)
-            {
-                memcpy(buf + i * (dec->block_size), dec->data_blocks[i], dec->block_size);
-            }
-
-            /* Get the encoder */
-            // pthread_mutex_lock(&encoder_list_mutex);
-            // struct encoder *enc = get_encoder(dec->udp_infos, NULL);
-            // if (enc == NULL)
-            // {
-            //     enc = new_encoder(dec->udp_infos);
-            // }
-            // pthread_mutex_lock(&(enc->mutex));
-            // pthread_mutex_unlock(&encoder_list_mutex);
-
-            /* Send the data to the tunnel */
-            int pos = 0;
-            while (pos < dec->data_size)
-            {
-                /* Get the packet length */
-                int len = get_packet_len(buf + pos);
-                if (len <= 0)
-                {
-                    perror("Error: packet len=0!!!");
-                    break;
-                }
-
-                /* Get the source vpn address */
-                struct sockaddr_in *vpn_addr = get_packet_addr(buf + pos, OUTPUT);
-
-                /* Update the VPN address */
-                // enc->vpn_addrs = update_vpn_address_list(enc->vpn_addrs, vpn_addr);
-
-                /* Send the packet to the tunnel */
-                // int write_bytes = write(tun_fd, buf + pos, len);
-                rx_insert(tun_fd, buf + pos, len, dec->groupID);
-
-                pos += len;
-            }
-            // pthread_mutex_unlock(&(enc->mutex));
-
-            free(buf);
-
-            print_rx();
-
-            /* Still need to wait for timeout to delete the decoder */
-        }
-
-        /* Wait for timeout */
-        // if (pthread_cond_timedwait(&dec->cond, &dec->mutex, &ts) == ETIMEDOUT)
-        if (pthread_cond_timedwait(&dec->cond, &dec->mutex, &ts) != 0)
-        {
-            /* Delete the decoder */
-            free_decoder(dec);
+            perror("Error while decoding!!!");
             return NULL;
         }
     }
+
+    /* Combine the data blocks */
+    unsigned char *buf = (unsigned char *)malloc((dec->data_num) * (dec->block_size) * sizeof(unsigned char));
+    for (int i = 0; i < dec->data_num; i++)
+    {
+        memcpy(buf + i * (dec->block_size), dec->data_blocks[i], dec->block_size);
+    }
+
+    /* Get the encoder */
+    pthread_mutex_lock(&encoder_list_mutex);
+    struct encoder *enc = get_encoder(dec->udp_infos, NULL);
+    if (enc == NULL)
+    {
+        enc = new_encoder(dec->udp_infos);
+    }
+    pthread_mutex_lock(&(enc->mutex));
+    pthread_mutex_unlock(&encoder_list_mutex);
+
+    /* Send the data to the tunnel */
+    int pos = 0;
+    while (pos < dec->data_size)
+    {
+        /* Get the packet length */
+        int len = get_packet_len(buf + pos);
+        if (len <= 0)
+        {
+            perror("Error: packet len=0!!!");
+            break;
+        }
+
+        /* Get the source vpn address */
+        struct sockaddr_in *vpn_addr = get_packet_addr(buf + pos, OUTPUT);
+
+        /* Update the VPN address */
+        enc->vpn_addrs = update_vpn_address_list(enc->vpn_addrs, vpn_addr);
+
+        /* Send the packet to the tunnel */
+        // int write_bytes = write(tun_fd, buf + pos, len);
+        rx_insert(tun_fd, buf + pos, len, dec->groupID);
+
+        pos += len;
+    }
+    pthread_mutex_unlock(&(enc->mutex));
+
+    free(buf);
+
+    print_rx();
+    return NULL;
 }
 
 /**
  * @brief print udp infos
- * 
+ *
  * @param udp_infos: list of udp info
  * @return void
-*/
+ */
 void print_udp_infos(struct list *udp_infos)
 {
     int udp_addr_num = 0;
@@ -472,9 +441,9 @@ void print_udp_infos(struct list *udp_infos)
 
 /**
  * @brief print rx
- * 
+ *
  * @return void
-*/
+ */
 void print_rx()
 {
     pthread_mutex_lock(&rx_mutex);
@@ -611,20 +580,21 @@ void clean_all_rx()
 
 struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr)
 {
-    if (encoder_iter == NULL)
+    if (encoder_list == NULL)
     {
         return NULL;
     }
-    struct list *end_iter = encoder_iter;
+    struct list *encoder_iter = encoder_list;
+    struct list *encoder_before = NULL;
     struct encoder *res_enc = NULL;
 
-    do
+    while (encoder_iter->next != NULL)
     {
         /* Get the encoder */
-        struct encoder *enc = (struct encoder *)(encoder_iter->data);
+        struct encoder *enc = (struct encoder *)(encoder_list->data);
 
         /* Check if the udp_infos match */
-        if (udp_infos != NULL)
+        if (udp_infos != NULL && res_enc == NULL)
         {
             struct list *enc_udp_iter = enc->udp_infos;
             while (enc_udp_iter != NULL)
@@ -637,6 +607,7 @@ struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr
                     struct sockaddr_in *udp_addr = ((struct udp_info *)(udp_iter->data))->addr;
                     if (enc_udp_addr->sin_addr.s_addr == udp_addr->sin_addr.s_addr && enc_udp_addr->sin_port == udp_addr->sin_port)
                     {
+                        clock_gettime(CLOCK_REALTIME, &(enc->touch));
                         res_enc = enc;
                         break;
                     }
@@ -651,7 +622,7 @@ struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr
         }
 
         /* Check if the vpn_addr match */
-        if (vpn_addr != NULL)
+        if (vpn_addr != NULL && res_enc == NULL)
         {
             struct list *enc_vpn_iter = enc->vpn_addrs;
             while (enc_vpn_iter != NULL)
@@ -660,6 +631,7 @@ struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr
 
                 if (enc_vpn_addr->sin_addr.s_addr == vpn_addr->sin_addr.s_addr && enc_vpn_addr->sin_port == vpn_addr->sin_port)
                 {
+                    clock_gettime(CLOCK_REALTIME, &(enc->touch));
                     res_enc = enc;
                     break;
                 }
@@ -674,15 +646,24 @@ struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr
         if (time_delta > UDP_TIMEOUT && pthread_mutex_trylock(&enc->mutex))
         {
             pthread_mutex_unlock(&enc->mutex);
-            free_encoder(enc);
-            struct list *next = encoder_iter->next;
-            encoder_iter = next;
+            if (encoder_before == NULL)
+            {
+                encoder_list = encoder_iter->next;
+                free(encoder_iter);
+                encoder_iter = encoder_list;
+                encoder_before = NULL;
+            }
+            else
+            {
+                encoder_before->next = encoder_iter->next;
+                free(encoder_iter);
+                encoder_iter = encoder_before->next;
+            }
             continue;
         }
-
         encoder_before = encoder_iter;
         encoder_iter = encoder_iter->next;
-    } while (encoder_iter != end_iter && encoder_iter != NULL);
+    }
 
     /* If the encoder is found, update info */
     if (res_enc != NULL)
@@ -719,18 +700,15 @@ struct encoder *new_encoder(struct list *udp_infos)
 
     struct list *new_encoder_item = (struct list *)malloc(sizeof(struct list));
     new_encoder_item->data = enc;
-    if (encoder_iter == NULL)
+    if (encoder_list == NULL)
     {
-        new_encoder_item->next = new_encoder_item;
-        encoder_iter = new_encoder_item;
-        encoder_before = encoder_iter;
+        new_encoder_item->next = NULL;
+        encoder_list = new_encoder_item;
     }
     else
     {
-        new_encoder_item->next = encoder_iter->next;
-        encoder_iter->next = new_encoder_item;
-        encoder_before = encoder_iter;
-        encoder_iter = new_encoder_item;
+        new_encoder_item->next = encoder_list;
+        encoder_list = new_encoder_item;
     }
 
     return enc;
@@ -738,25 +716,56 @@ struct encoder *new_encoder(struct list *udp_infos)
 
 struct decoder *get_decoder(unsigned int groupID)
 {
-    if (decoder_iter == NULL)
+    if (decoder_list == NULL)
     {
         return NULL;
     }
-    struct list *end_iter = decoder_iter;
-    struct decoder *res_decoder = NULL;
+    struct list *decoder_iter = decoder_list;
+    struct list *decoder_before = NULL;
+    struct decoder *res_dec = NULL;
 
-    do
+    int i = 0;
+    while (decoder_iter != NULL)
     {
+        i++;
         struct decoder *dec = (struct decoder *)(decoder_iter->data);
+
         if (dec->groupID == groupID)
         {
-            return dec;
+            clock_gettime(CLOCK_REALTIME, &(dec->touch));
+            res_dec = dec;
+            // return res_dec;
+        }
+
+        /* Check if the decoder is time to die */
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        long time_delta = (now.tv_sec - dec->touch.tv_sec) * (long)1e9 + (now.tv_nsec - dec->touch.tv_nsec);
+        if (time_delta > config.decode_timeout * 1000 && (pthread_mutex_trylock(&dec->mutex) == 0))
+        {
+            pthread_mutex_unlock(&dec->mutex);
+            free_decoder(dec);
+            if (decoder_before == NULL)
+            {
+                decoder_list = decoder_iter->next;
+                free(decoder_iter);
+                decoder_iter = decoder_list;
+                decoder_before = NULL;
+            }
+            else
+            {
+                decoder_before->next = decoder_iter->next;
+                free(decoder_iter);
+                decoder_iter = decoder_before->next;
+            }
+            continue;
         }
         decoder_before = decoder_iter;
         decoder_iter = decoder_iter->next;
-    } while (decoder_iter != end_iter && decoder_iter != NULL);
+    }
+    // printf("get_decoder %d times\n", i);
 
-    return res_decoder;
+    return res_dec;
 }
 
 struct decoder *new_decoder(unsigned int groupId, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num)
@@ -777,25 +786,21 @@ struct decoder *new_decoder(unsigned int groupId, unsigned int data_size, unsign
     }
     dec->udp_infos = NULL;
 
-    dec->signaled = 0;
-
-    pthread_cond_init(&(dec->cond), NULL);
     pthread_mutex_init(&(dec->mutex), NULL);
+
+    clock_gettime(CLOCK_REALTIME, &(dec->touch));
 
     struct list *new_decoder_item = (struct list *)malloc(sizeof(struct list));
     new_decoder_item->data = dec;
-    if (decoder_iter == NULL)
+    if (decoder_list == NULL)
     {
-        new_decoder_item->next = new_decoder_item;
-        decoder_iter = new_decoder_item;
-        decoder_before = decoder_iter;
+        new_decoder_item->next = NULL;
+        decoder_list = new_decoder_item;
     }
     else
     {
-        new_decoder_item->next = decoder_iter->next;
-        decoder_iter->next = new_decoder_item;
-        decoder_before = decoder_iter;
-        decoder_iter = new_decoder_item;
+        new_decoder_item->next = decoder_list;
+        decoder_list = new_decoder_item;
     }
 
     return dec;
@@ -859,12 +864,6 @@ void free_encoder(struct encoder *enc)
  */
 void free_decoder(struct decoder *dec)
 {
-    pthread_mutex_unlock(&(dec->mutex));
-    pthread_mutex_lock(&decoder_list_mutex);
-
-    pthread_mutex_lock(&(dec->mutex));
-    pthread_mutex_unlock(&(dec->mutex));
-
     for (int i = 0; i < dec->block_num; i++)
     {
         free(dec->data_blocks[i]);
@@ -872,30 +871,6 @@ void free_decoder(struct decoder *dec)
     free(dec->data_blocks);
     free(dec->marks);
     free(dec);
-    struct list *end_iter = decoder_iter;
-    do
-    {
-        struct decoder *dec_iter = (struct decoder *)(decoder_iter->data);
-        if (dec_iter->groupID == dec->groupID)
-        {
-            if (decoder_before == decoder_iter)
-            {
-                free(decoder_iter);
-                decoder_iter = NULL;
-                decoder_before = NULL;
-            }
-            else
-            {
-                decoder_before->next = decoder_iter->next;
-                free(decoder_iter);
-                decoder_iter = decoder_before->next;
-            }
-            break;
-        }
-        decoder_before = decoder_iter;
-        decoder_iter = decoder_iter->next;
-    } while (decoder_iter != end_iter);
-    pthread_mutex_unlock(&decoder_list_mutex);
 }
 
 /**
