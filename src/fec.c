@@ -1,8 +1,13 @@
 #include "fec.h"
 
-pthread_mutex_t group_list_mutex;
-struct list *group_iter = NULL;
-struct list *group_before = NULL;
+pthread_mutex_t decoder_list_mutex;
+struct list *decoder_iter = NULL;
+struct list *decoder_before = NULL;
+unsigned int decoder_num = 0;
+
+pthread_mutex_t encoder_list_mutex;
+struct list *encoder_iter = NULL;
+struct list *encoder_before = NULL;
 
 struct list *rx_list = NULL;
 unsigned int rx_num = 0;
@@ -13,9 +18,10 @@ unsigned int tx_id = 0;
 pthread_mutex_t tx_mutex;
 
 /**
- * Serve incoming input packets from the TUN interface.
+ * @brief Serve incoming input packets from the TUN interface.
  *
  * @param args: Void pointer to input_param struct containing packet data and client information
+ * @return void
  */
 void *serve_input(void *args) // from server to client
 {
@@ -25,72 +31,70 @@ void *serve_input(void *args) // from server to client
     unsigned int packet_size = param->packet_size;
     unsigned long int tid = param->tid;
     int udp_fd = param->udp_fd;
+
+    struct sockaddr_in *udp_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+    udp_addr->sin_family = param->udp_addr.sin_family;
+    udp_addr->sin_addr.s_addr = param->udp_addr.sin_addr.s_addr;
+    udp_addr->sin_port = param->udp_addr.sin_port;
     free(param);
+
+    socklen_t client_addr_len = sizeof(*udp_addr);
+    int write_bytes = sendto(udp_fd, packet, packet_size, 0, (const struct sockaddr *)udp_addr, client_addr_len);
+    printf("UDP %d  send %d bytes to %s:%i\n", udp_fd, packet_size, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
+    if (write_bytes < 0)
+    {
+        perror("Error while sending to udp_fd!!!");
+    }
+    free(udp_addr);
+    free(packet);
+    return NULL;
 
     /* Get the target vpn address of the packet */
     struct sockaddr_in *vpn_addr = get_packet_addr(packet, INPUT);
     if (vpn_addr == NULL)
         return NULL;
 
-    /* Get the group of the target address by vpn address*/
-    pthread_mutex_lock(&group_list_mutex);
-    struct group *group = get_group(-1, vpn_addr, udp_fd);
-    if (group == NULL)
+    /* Get the encoder */
+    pthread_mutex_lock(&encoder_list_mutex);
+    struct encoder *enc = get_encoder(NULL, vpn_addr);
+    if (enc == NULL)
     {
-        pthread_mutex_unlock(&group_list_mutex);
+        pthread_mutex_unlock(&encoder_list_mutex);
         return NULL;
     }
-    pthread_mutex_lock(&(group->mutex));
-    pthread_mutex_unlock(&group_list_mutex);
+    pthread_mutex_lock(&(enc->mutex));
+    pthread_mutex_unlock(&encoder_list_mutex);
 
-    /* Get the encoder of the group */
-    struct encoder *enc = group->enc;
-
-    /* If the encoder buffer is not full, add the packet to the buffer */
-    if ((packet_size + enc->data_size) < MAX_PACKET_BUF)
+    /* Add the packet to the encoder buffer */
+    memcpy(enc->packet_buf + enc->data_size, packet, packet_size);
+    free(packet);
+    enc->data_size += packet_size;
+    enc->packet_num += 1;
+    // printf("Encoded packet, packet_num: %d\n", enc->packet_num);
+    if (enc->packet_num == 1)
     {
-        /* Add the packet to the encoder buffer */
-        memcpy(enc->packet_buf + enc->data_size, packet, packet_size);
-        free(packet);
-        enc->data_size += packet_size;
-        enc->packet_num += 1;
-
-        /* If packet number reaches the maximum, encode the packets and send them over the network*/
-        if (enc->packet_num >= config.max_TX_num)
-        {
-            struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
-            enc_p->enc = enc;
-            enc_p->udp_fd = udp_fd;
-            enc_p->udp_infos = group->udp_infos;
-            encode((void *)enc_p);
-        }
-    }
-    else
-    {
-        /* The encoder buffer is full, encode the packets and send them over the network */
         struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
         enc_p->enc = enc;
         enc_p->udp_fd = udp_fd;
-        enc_p->udp_infos = group->udp_infos;
-        encode((void *)enc_p);
-
-        /* Add the packet to the encoder buffer */
-        memcpy(enc->packet_buf, packet, packet_size);
-        free(packet);
-        enc->data_size += packet_size;
-        enc->packet_num += 1;
+        threadpool_add(pool, (void *)encode, (void *)enc_p, 0);
     }
-    pthread_mutex_unlock(&(group->mutex));
+
+    /* If packet reaches the maximum, encode the packets and send them over the network*/
+    if (enc->packet_num >= config.max_TX_num || (packet_size + enc->data_size) > MAX_PACKET_BUF)
+    {
+        pthread_cond_signal(&(enc->cond));
+    }
+    pthread_mutex_unlock(&(enc->mutex));
 }
 
 /**
- * Serve incoming output packets from the UDP socket.
+ * @brief Serve incoming output packets from the UDP socket.
  *
  * @param args: Void pointer to output_param struct containing packet data and client information
+ * @return void
  */
-void *serve_output(void *args) // client to server
+void *serve_output(void *args)
 {
-
     /* Get the output parameters */
     struct output_param *param = (struct output_param *)args;
     unsigned char *packet = param->packet;
@@ -104,6 +108,13 @@ void *serve_output(void *args) // client to server
     int udp_fd = param->udp_fd;
     int tun_fd = param->tun_fd;
     free(param);
+
+    // int write_bytes = write(tun_fd, packet, packet_size);
+    // if (write_bytes < 0)
+    // {
+    //     perror("Error while sending to tun_fd!!!");
+    // }
+    // return NULL;
 
     /* Parse the HON Header */
     int pos = 0;
@@ -128,17 +139,19 @@ void *serve_output(void *args) // client to server
         pos += 8;
     }
 
-    /* Get the group by groupID */
-    pthread_mutex_lock(&group_list_mutex);
-    struct group *group = get_group(groupID, NULL, udp_fd);
-
-    /* Create a new group if it does not exist */
-    if (group == NULL)
+    pthread_mutex_lock(&decoder_list_mutex);
+    struct decoder *dec = get_decoder(groupID);
+    if (dec == NULL)
     {
-        group = new_group(groupID, data_size, block_size, data_num, block_num);
+        dec = new_decoder(groupID, data_size, block_size, data_num, block_num);
+
+        struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
+        dec_p->dec = dec;
+        dec_p->tun_fd = tun_fd;
+        threadpool_add(pool, (void *)decode, (void *)dec_p, 0);
     }
-    pthread_mutex_lock(&(group->mutex));
-    pthread_mutex_unlock(&group_list_mutex);
+    pthread_mutex_lock(&(dec->mutex));
+    pthread_mutex_unlock(&decoder_list_mutex);
 
     /* Update the UDP info */
     struct udp_info *udp_info = (struct udp_info *)malloc(sizeof(struct udp_info));
@@ -157,65 +170,54 @@ void *serve_output(void *args) // client to server
         udp_info->time_tail = udp_info->time_head;
         udp_info->time_tail->next = NULL;
     }
-    group->udp_infos = update_udp_info_list(group->udp_infos, udp_info);
-
-    /* Get udp_addr nums, and print every addr*/
-    // int udp_addr_num = 0;
-    // struct list *udp_info_iter = group->udp_infos;
-    // while (udp_info_iter != NULL)
-    // {
-    //     udp_addr_num++;
-    //     udp_info_iter = udp_info_iter->next;
-    // }
-    // udp_info_iter = group->udp_infos;
-    // printf("udp_addr_num: %d {", udp_addr_num);
-    // for (int i = 0; i < udp_addr_num; i++)
-    // {
-    //     if (i != 0)
-    //         printf(", ");
-    //     struct sockaddr_in *udp_addr = ((struct udp_info *)(udp_info_iter->data))->addr;
-    //     printf("udp_addr: %s:%i", inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
-    //     udp_info_iter = udp_info_iter->next;
-    // }
-    // printf("}\n");
-
-    /* Get the decoder */
-    struct decoder *dec = group->dec;
+    dec->udp_infos = update_udp_info_list(dec->udp_infos, udp_info);
 
     /* Check if the packet is received */
     if ((dec->marks[index]))
     {
         dec->receive_num++;
         dec->marks[index] = 0;
-        clock_gettime(CLOCK_REALTIME, &(dec->touch));
         memcpy(dec->data_blocks[index], packet + pos, dec->block_size);
         free(packet);
 
         /* Decode the data blocks if enough blocks are received */
         if (dec->receive_num == dec->data_num)
         {
-            struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
-            dec_p->group = group;
-            dec_p->tun_fd = tun_fd;
-            decode(dec_p);
+            dec->signaled++;
+            pthread_cond_signal(&(dec->cond));
         }
     }
-    pthread_mutex_unlock(&(group->mutex));
+
+    pthread_mutex_unlock(&(dec->mutex));
+
+    return NULL;
 }
 
 /**
- * Encode the packets and sends them over the network using the UDP file descriptor.
+ * @brief Encode the packets and sends them over the network using the UDP file descriptor.
  *
  * @param args: Void pointer to the enc_param struct containing necessary encoding parameters
+ * @return void
  */
 void *encode(void *args)
 {
     /* Get the encoding parameters */
     struct enc_param *enc_p = (struct enc_param *)args;
+    // struct group *group = enc_p->group;
     struct encoder *enc = enc_p->enc;
-    struct list *udp_infos = enc_p->udp_infos;
+    struct list *udp_infos = enc->udp_infos;
     int udp_fd = enc_p->udp_fd;
     free(enc_p);
+
+    /* Wait for the packets */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += config.encode_timeout / 1000;
+    ts.tv_nsec += (config.encode_timeout % 1000) * 1000;
+    pthread_mutex_lock(&(enc->mutex));
+    pthread_cond_timedwait(&enc->cond, &enc->mutex, &ts);
+
+    printf("Encode %d packets\n", enc->packet_num);
 
     /* Determine the number of blocks and the size of each block */
     unsigned int data_size = enc->data_size;
@@ -224,7 +226,6 @@ void *encode(void *args)
 
     /* Determine the number of parity blocks */
     unsigned int block_num = data_num;
-    srand(enc->touch.tv_nsec);
     for (unsigned int i = 0; i < data_num; i++)
     {
         if (rand() % 100 + 1 < config.parity_rate)
@@ -323,6 +324,7 @@ void *encode(void *args)
         socklen_t udp_addr_len = sizeof(*udp_addr);
 
         /* Send the data block over the network */
+        printf("UDP %d try to send bytes to %s:%i\n", udp_fd, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
         int write_bytes = sendto(udp_fd, buffer, block_size + pos, 0, (const struct sockaddr *)udp_addr, udp_addr_len);
         printf("UDP %d Send %d bytes to %s:%i\n", udp_fd, write_bytes, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
         if (write_bytes < 0)
@@ -335,103 +337,183 @@ void *encode(void *args)
     /* Reset the encoder */
     enc->packet_num = 0;
     enc->data_size = 0;
+    pthread_mutex_unlock(&(enc->mutex));
 }
 
 /**
- * Decode the received packets.
+ * @brief Decode the received packets.
  *
  * @param args: Void pointer to dec_param struct containing decoder and tunnel fd
+ * @return void
  */
 void *decode(void *args)
 {
     /* Get the decoder parameters */
     struct dec_param *dec_p = (struct dec_param *)args;
-    struct group *group = dec_p->group;
-    struct decoder *dec = group->dec;
+    // struct group *group = dec_p->group;
+    struct decoder *dec = dec_p->dec;
     int tun_fd = dec_p->tun_fd;
     free(dec_p);
 
-    /* Decode the data blocks if necessary */
-    if (dec->block_num > dec->data_num)
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += config.decode_timeout / 1000;
+    ts.tv_nsec += (config.decode_timeout % 1000) * 1000;
+    pthread_mutex_lock(&(dec->mutex));
+
+    while (1)
     {
-        reed_solomon *rs = reed_solomon_new(dec->data_num, dec->block_num - dec->data_num);
-        if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, dec->block_num, dec->block_size))
+        if (dec->signaled)
         {
-            // printf("Decode Error!!!");
-            pthread_exit(NULL);
+            if (dec->signaled == 2)
+            {
+                continue;
+            }
+            dec->signaled = 2;
+            /* Decode the data blocks if necessary */
+            if (dec->block_num > dec->data_num)
+            {
+                reed_solomon *rs = reed_solomon_new(dec->data_num, dec->block_num - dec->data_num);
+                if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, dec->block_num, dec->block_size))
+                {
+                    perror("Error while decoding!!!");
+                    continue;
+                }
+            }
+
+            /* Combine the data blocks */
+            unsigned char *buf = (unsigned char *)malloc((dec->data_num) * (dec->block_size) * sizeof(unsigned char));
+            for (int i = 0; i < dec->data_num; i++)
+            {
+                memcpy(buf + i * (dec->block_size), dec->data_blocks[i], dec->block_size);
+            }
+
+            /* Get the encoder */
+            // pthread_mutex_lock(&encoder_list_mutex);
+            // struct encoder *enc = get_encoder(dec->udp_infos, NULL);
+            // if (enc == NULL)
+            // {
+            //     enc = new_encoder(dec->udp_infos);
+            // }
+            // pthread_mutex_lock(&(enc->mutex));
+            // pthread_mutex_unlock(&encoder_list_mutex);
+
+            /* Send the data to the tunnel */
+            int pos = 0;
+            while (pos < dec->data_size)
+            {
+                /* Get the packet length */
+                int len = get_packet_len(buf + pos);
+                if (len <= 0)
+                {
+                    perror("Error: packet len=0!!!");
+                    break;
+                }
+
+                /* Get the source vpn address */
+                struct sockaddr_in *vpn_addr = get_packet_addr(buf + pos, OUTPUT);
+
+                /* Update the VPN address */
+                // enc->vpn_addrs = update_vpn_address_list(enc->vpn_addrs, vpn_addr);
+
+                /* Send the packet to the tunnel */
+                // int write_bytes = write(tun_fd, buf + pos, len);
+                rx_insert(tun_fd, buf + pos, len, dec->groupID);
+
+                pos += len;
+            }
+            // pthread_mutex_unlock(&(enc->mutex));
+
+            free(buf);
+
+            print_rx();
+
+            /* Still need to wait for timeout to delete the decoder */
+        }
+
+        /* Wait for timeout */
+        // if (pthread_cond_timedwait(&dec->cond, &dec->mutex, &ts) == ETIMEDOUT)
+        if (pthread_cond_timedwait(&dec->cond, &dec->mutex, &ts) != 0)
+        {
+            /* Delete the decoder */
+            free_decoder(dec);
+            return NULL;
         }
     }
-
-    /* Combine the data blocks */
-    unsigned char *buf = (unsigned char *)malloc((dec->data_num) * (dec->block_size) * sizeof(unsigned char));
-    for (int i = 0; i < dec->data_num; i++)
-    {
-        memcpy(buf + i * (dec->block_size), dec->data_blocks[i], dec->block_size);
-    }
-
-    /* Send the data to the tunnel */
-    int pos = 0;
-    while (pos < dec->data_size)
-    {
-        /* Get the packet length */
-        int len = get_packet_len(buf + pos);
-        if (len <= 0)
-        {
-            perror("Error: packet len=0!!!");
-            break;
-        }
-
-        /* Get the source vpn address */
-        struct sockaddr_in *vpn_addr = get_packet_addr(buf + pos, OUTPUT);
-
-        /* Update the VPN address */
-        group->vpn_addrs = update_vpn_address_list(group->vpn_addrs, vpn_addr);
-
-        /* Send the packet to the tunnel */
-        rx_insert(tun_fd, buf + pos, len, group->groupID);
-
-        pos += len;
-    }
-
-    // pthread_mutex_lock(&rx_mutex);
-    // if (rx_num > 0)
-    // {
-    //     printf("Left %d packets in rx_list: ", rx_num);
-    //     printf("rx_id= %d. left_id={", rx_id);
-    //     struct list *rx_iter = rx_list;
-    //     unsigned int left_id = rx_id;
-    //     unsigned int left_num = rx_num;
-    //     while (rx_iter != NULL)
-    //     {
-    //         struct rx_packet *rx = (struct rx_packet *)(rx_iter->data);
-    //         if (rx->id != left_id)
-    //         {
-    //             if (left_id != rx_id)
-    //                 printf("%u*%u,", left_id, left_num);
-    //             left_id = rx->id;
-    //             left_num = 1;
-    //         }
-    //         else
-    //         {
-    //             left_num++;
-    //         }
-    //         rx_iter = rx_iter->next;
-    //     }
-    //     if (rx_num > 0)
-    //     {
-    //         printf("%u*%u}\n", left_id, left_num);
-    //     }
-    //     else
-    //     {
-    //         printf("}\n");
-    //     }
-    // }
-    // pthread_mutex_unlock(&rx_mutex);
-    free(buf);
 }
 
 /**
- * Insert and sort the received packets.
+ * @brief print udp infos
+ * 
+ * @param udp_infos: list of udp info
+ * @return void
+*/
+void print_udp_infos(struct list *udp_infos)
+{
+    int udp_addr_num = 0;
+    struct list *udp_info_iter = udp_infos;
+    while (udp_info_iter != NULL)
+    {
+        udp_addr_num++;
+        udp_info_iter = udp_info_iter->next;
+    }
+    udp_info_iter = udp_infos;
+    printf("udp_addr_num: %d {", udp_addr_num);
+    for (int i = 0; i < udp_addr_num; i++)
+    {
+        if (i != 0)
+            printf(", ");
+        struct sockaddr_in *udp_addr = ((struct udp_info *)(udp_info_iter->data))->addr;
+        printf("udp_addr: %s:%i", inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
+        udp_info_iter = udp_info_iter->next;
+    }
+    printf("}\n");
+}
+
+/**
+ * @brief print rx
+ * 
+ * @return void
+*/
+void print_rx()
+{
+    pthread_mutex_lock(&rx_mutex);
+    if (rx_num > 0)
+    {
+        printf("rx_id= %d. left_id={", rx_id);
+        struct list *rx_iter = rx_list;
+        unsigned int left_id = rx_id;
+        unsigned int left_num = rx_num;
+        while (rx_iter != NULL)
+        {
+            struct rx_packet *rx = (struct rx_packet *)(rx_iter->data);
+            if (rx->id != left_id)
+            {
+                if (left_id != rx_id)
+                    printf("%u*%u,", left_id, left_num);
+                left_id = rx->id;
+                left_num = 1;
+            }
+            else
+            {
+                left_num++;
+            }
+            rx_iter = rx_iter->next;
+        }
+        if (rx_num > 0)
+        {
+            printf("%u*%u}\n", left_id, left_num);
+        }
+        else
+        {
+            printf("}\n");
+        }
+    }
+    pthread_mutex_unlock(&rx_mutex);
+}
+
+/**
+ * @brief and sort the received packets.
  *
  * @param tun_fd: The tunnel file descriptor
  * @param buf: The packet buffer
@@ -486,11 +568,11 @@ void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int gr
 
         struct timespec now;
         clock_gettime(CLOCK_REALTIME, &now);
-        long time_delta = (now.tv_sec - rx->touch.tv_sec) * (long)1e9 + (now.tv_sec - rx->touch.tv_nsec);
-        if (time_delta < config.rx_timeout && rx_num < config.max_RX_num && rx_id != rx->id && rx_id < rx->id - 1)
+        long time_delta = (now.tv_sec - rx->touch.tv_sec) * (long)1e9 + (now.tv_nsec - rx->touch.tv_nsec);
+        if (time_delta < config.rx_timeout * 1000 && rx_num < config.max_RX_num && rx_id != rx->id && rx_id < rx->id - 1)
             break;
 
-        // printf("TUN send %d bytes. groupId=%u\n", rx->packet_len, rx->id);
+        // printf("TUN %d send %d bytes. groupId=%u\n",tun_fd, rx->packet_len, rx->id);
         int write_bytes = write(tun_fd, rx->packet, rx->packet_len);
         if (write_bytes < 0)
         {
@@ -508,7 +590,7 @@ void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int gr
 }
 
 /**
- * Clean all rx packets.
+ * @brief all rx packets.
  *
  */
 void clean_all_rx()
@@ -527,251 +609,293 @@ void clean_all_rx()
     pthread_mutex_unlock(&rx_mutex);
 }
 
-/**
- * Get the group by groupID or VPN address.
- *
- * @param groupID: The groupID
- * @param sockaddr_in: The VPN address
- * @param udp_fd: The UDP socket file descriptor
- * @return: The group
- */
-struct group *get_group(unsigned int groupID, struct sockaddr_in *addr, int udp_fd)
+struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr)
 {
-
-    if (group_iter == NULL)
+    if (encoder_iter == NULL)
     {
         return NULL;
     }
-
-    struct list *end_iter = group_iter;
+    struct list *end_iter = encoder_iter;
+    struct encoder *res_enc = NULL;
 
     do
     {
-        struct group *group = (struct group *)(group_iter->data);
+        /* Get the encoder */
+        struct encoder *enc = (struct encoder *)(encoder_iter->data);
 
-        struct encoder *enc = group->enc;
-        struct decoder *dec = group->dec;
-
-        struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-        long time_delta_enc = (now.tv_sec - enc->touch.tv_sec) * (long)1e9 + (now.tv_sec - enc->touch.tv_nsec);
-        long time_delta_dec = (now.tv_sec - dec->touch.tv_sec) * (long)1e9 + (now.tv_sec - dec->touch.tv_nsec);
-        long time_delta_group = (now.tv_sec - group->touch.tv_sec) * (long)1e9 + (now.tv_sec - group->touch.tv_nsec);
-
-        /* If the encoder has not been used for a while, encode the packets and send them over the network. */
-        if (time_delta_enc > config.encode_timeout && !pthread_mutex_trylock(&(group->mutex)))
+        /* Check if the udp_infos match */
+        if (udp_infos != NULL)
         {
-            if (enc->data_size > 0)
+            struct list *enc_udp_iter = enc->udp_infos;
+            while (enc_udp_iter != NULL)
             {
-                struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
-                enc_p->enc = enc;
-                enc_p->udp_fd = udp_fd;
-                enc_p->udp_infos = group->udp_infos;
-                // printf("Encoder TimeOut: %d\n", enc->packet_num);
-                encode((void *)enc_p);
+                struct sockaddr_in *enc_udp_addr = ((struct udp_info *)(enc_udp_iter->data))->addr;
+
+                struct list *udp_iter = udp_infos;
+                while (udp_iter != NULL)
+                {
+                    struct sockaddr_in *udp_addr = ((struct udp_info *)(udp_iter->data))->addr;
+                    if (enc_udp_addr->sin_addr.s_addr == udp_addr->sin_addr.s_addr && enc_udp_addr->sin_port == udp_addr->sin_port)
+                    {
+                        res_enc = enc;
+                        break;
+                    }
+                    udp_iter = udp_iter->next;
+                }
+                if (res_enc != NULL)
+                {
+                    break;
+                }
+                enc_udp_iter = enc_udp_iter->next;
             }
-            pthread_mutex_unlock(&(group->mutex));
         }
 
-        /* If the group has not been used for a while, free the group. */
-        if (time_delta_group > GROUP_TIMEOUT)
+        /* Check if the vpn_addr match */
+        if (vpn_addr != NULL)
         {
-            struct list *next = group_iter->next;
-            free_group(group);
-            free(group_iter);
+            struct list *enc_vpn_iter = enc->vpn_addrs;
+            while (enc_vpn_iter != NULL)
+            {
+                struct sockaddr_in *enc_vpn_addr = ((struct sockaddr_in *)(enc_vpn_iter->data));
 
-            if (group_before == group_iter)
-            {
-                group_iter = NULL;
-                group_before = NULL;
+                if (enc_vpn_addr->sin_addr.s_addr == vpn_addr->sin_addr.s_addr && enc_vpn_addr->sin_port == vpn_addr->sin_port)
+                {
+                    res_enc = enc;
+                    break;
+                }
+                enc_vpn_iter = enc_vpn_iter->next;
             }
-            else
-            {
-                group_before->next = next;
-                group_iter = next;
-            }
+        }
+
+        /* Check if the udp is time to die */
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        long time_delta = (now.tv_sec - enc->touch.tv_sec) * (long)1e9 + (now.tv_nsec - enc->touch.tv_nsec);
+        if (time_delta > UDP_TIMEOUT && pthread_mutex_trylock(&enc->mutex))
+        {
+            pthread_mutex_unlock(&enc->mutex);
+            free_encoder(enc);
+            struct list *next = encoder_iter->next;
+            encoder_iter = next;
             continue;
         }
 
-        /* Find the group by VPN address */
-        if (addr != NULL)
+        encoder_before = encoder_iter;
+        encoder_iter = encoder_iter->next;
+    } while (encoder_iter != end_iter && encoder_iter != NULL);
+
+    /* If the encoder is found, update info */
+    if (res_enc != NULL)
+    {
+        clock_gettime(CLOCK_REALTIME, &(res_enc->touch));
+        if (udp_infos != NULL)
         {
-            struct list *vpn_iter = (struct list *)group->vpn_addrs;
-            while (vpn_iter != NULL)
+            struct list *udp_iter = udp_infos;
+            while (udp_iter != NULL)
             {
-                struct sockaddr_in *vpn_addr = (struct sockaddr_in *)(vpn_iter->data);
-                if (vpn_addr->sin_addr.s_addr == addr->sin_addr.s_addr && vpn_addr->sin_port == addr->sin_port)
-                {
-                    clock_gettime(CLOCK_REALTIME, &(group->touch));
-                    clock_gettime(CLOCK_REALTIME, &(group->enc->touch));
-                    return group;
-                }
-                vpn_iter = vpn_iter->next;
+                res_enc->udp_infos = update_udp_info_list(res_enc->udp_infos, udp_iter->data);
+                udp_iter = udp_iter->next;
             }
         }
+    }
 
-        /* Find the group by groupID */
-        else if ((group->groupID == groupID))
-        {
-
-            clock_gettime(CLOCK_REALTIME, &(group->touch));
-            clock_gettime(CLOCK_REALTIME, &(group->dec->touch));
-            return group;
-        }
-
-        group_before = group_iter;
-        group_iter = group_iter->next;
-
-    } while (group_iter != end_iter && group_iter != NULL);
-
-    return NULL;
+    return res_enc;
 }
 
-/**
- * Create a new group.
- *
- * @param groupID: The groupID
- * @param data_size: The size of the data
- * @param block_size: The size of the block
- * @param data_num: The number of data blocks
- * @param block_num: The number of blocks
- * @return: The new group
- */
-struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num)
+struct encoder *new_encoder(struct list *udp_infos)
 {
-    /* Create a new group */
-    struct group *group = (struct group *)malloc(sizeof(struct group));
+    struct encoder *enc = (struct encoder *)malloc(sizeof(struct encoder));
+    enc->packet_buf = (unsigned char *)malloc(MAX_PACKET_BUF * sizeof(unsigned char));
+    enc->data_size = 0;
+    enc->packet_num = 0;
 
-    /* Set the groupID */
-    group->groupID = groupID;
+    enc->udp_infos = udp_infos;
+    enc->vpn_addrs = NULL;
 
-    /* Init the UDP address */
-    group->udp_infos = (struct list *)malloc(sizeof(struct list));
-    group->udp_infos = NULL;
+    pthread_cond_init(&(enc->cond), NULL);
+    pthread_mutex_init(&(enc->mutex), NULL);
 
-    /* Init the VPN address */
-    group->vpn_addrs = (struct list *)malloc(sizeof(struct list));
-    group->vpn_addrs = NULL;
+    clock_gettime(CLOCK_REALTIME, &(enc->touch));
 
-    /* Init the encoder */
-    group->enc = (struct encoder *)malloc(sizeof(struct encoder));
-    group->enc->packet_buf = (unsigned char *)malloc(MAX_PACKET_BUF * sizeof(unsigned char));
-    group->enc->data_size = 0;
-    group->enc->packet_num = 0;
-    clock_gettime(CLOCK_REALTIME, &(group->enc->touch));
-
-    /* Init the decoder */
-    group->dec = (struct decoder *)malloc(sizeof(struct decoder));
-    group->dec->data_size = data_size;
-    group->dec->block_size = block_size;
-    group->dec->data_num = data_num;
-    group->dec->block_num = block_num;
-    group->dec->receive_num = 0;
-    group->dec->data_blocks = (unsigned char **)malloc(block_num * sizeof(unsigned char *));
-    for (int i = 0; i < block_num; i++)
+    struct list *new_encoder_item = (struct list *)malloc(sizeof(struct list));
+    new_encoder_item->data = enc;
+    if (encoder_iter == NULL)
     {
-        group->dec->data_blocks[i] = (unsigned char *)malloc(block_size * sizeof(unsigned char));
-    }
-    group->dec->marks = (unsigned char *)malloc(block_num * sizeof(unsigned char));
-    memset(group->dec->marks, 1, block_num * sizeof(unsigned char));
-    clock_gettime(CLOCK_REALTIME, &(group->dec->touch));
-
-    /* Init the mutex */
-    pthread_mutex_init(&(group->mutex), NULL);
-
-    /* Set the touch time */
-    clock_gettime(CLOCK_REALTIME, &(group->touch));
-
-    /* Add the group to the group list */
-    struct list *new_group_item = (struct list *)malloc(sizeof(struct list));
-    new_group_item->data = group;
-    if (group_iter == NULL)
-    {
-        new_group_item->next = new_group_item;
-        group_iter = new_group_item;
-        group_before = group_iter;
+        new_encoder_item->next = new_encoder_item;
+        encoder_iter = new_encoder_item;
+        encoder_before = encoder_iter;
     }
     else
     {
-        new_group_item->next = group_iter->next;
-        group_iter->next = new_group_item;
+        new_encoder_item->next = encoder_iter->next;
+        encoder_iter->next = new_encoder_item;
+        encoder_before = encoder_iter;
+        encoder_iter = new_encoder_item;
     }
-    return group;
+
+    return enc;
+}
+
+struct decoder *get_decoder(unsigned int groupID)
+{
+    if (decoder_iter == NULL)
+    {
+        return NULL;
+    }
+    struct list *end_iter = decoder_iter;
+    struct decoder *res_decoder = NULL;
+
+    do
+    {
+        struct decoder *dec = (struct decoder *)(decoder_iter->data);
+        if (dec->groupID == groupID)
+        {
+            return dec;
+        }
+        decoder_before = decoder_iter;
+        decoder_iter = decoder_iter->next;
+    } while (decoder_iter != end_iter && decoder_iter != NULL);
+
+    return res_decoder;
+}
+
+struct decoder *new_decoder(unsigned int groupId, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num)
+{
+    struct decoder *dec = (struct decoder *)malloc(sizeof(struct decoder));
+    dec->groupID = groupId;
+    dec->data_size = data_size;
+    dec->block_size = block_size;
+    dec->data_num = data_num;
+    dec->block_num = block_num;
+    dec->receive_num = 0;
+    dec->marks = (char *)malloc(block_num * sizeof(char));
+    dec->data_blocks = (unsigned char **)malloc(block_num * sizeof(unsigned char *));
+    for (int i = 0; i < block_num; i++)
+    {
+        dec->marks[i] = 1;
+        dec->data_blocks[i] = (unsigned char *)malloc(block_size * sizeof(unsigned char));
+    }
+    dec->udp_infos = NULL;
+
+    dec->signaled = 0;
+
+    pthread_cond_init(&(dec->cond), NULL);
+    pthread_mutex_init(&(dec->mutex), NULL);
+
+    struct list *new_decoder_item = (struct list *)malloc(sizeof(struct list));
+    new_decoder_item->data = dec;
+    if (decoder_iter == NULL)
+    {
+        new_decoder_item->next = new_decoder_item;
+        decoder_iter = new_decoder_item;
+        decoder_before = decoder_iter;
+    }
+    else
+    {
+        new_decoder_item->next = decoder_iter->next;
+        decoder_iter->next = new_decoder_item;
+        decoder_before = decoder_iter;
+        decoder_iter = new_decoder_item;
+    }
+
+    return dec;
 }
 
 /**
- * Free a group.
+ * @brief Free the encoder
  *
- * @param group: The group
+ * @param enc: The encoder
+ * @return void
  */
-void free_group(struct group *group)
+void free_encoder(struct encoder *enc)
 {
-    /* Free the UDP address */
-    struct list *udp_iter = group->udp_infos;
+    /* Free the packet_buf */
+    free(enc->packet_buf);
+
+    /* Free the udp_infos */
+    struct list *udp_iter = enc->udp_infos;
     while (udp_iter != NULL)
     {
-        struct list *next = udp_iter->next;
-        free(((struct udp_info *)(udp_iter->data))->addr);
-        struct list *time_iter = ((struct udp_info *)(udp_iter->data))->time_head;
+        struct udp_info *udp_info = (struct udp_info *)(udp_iter->data);
+        free(udp_info->addr);
+
+        /* Free the time_pairs */
+        struct list *time_iter = udp_info->time_head;
         while (time_iter != NULL)
         {
+            struct time_pair *tp = (struct time_pair *)(time_iter->data);
+            free(tp);
             struct list *next = time_iter->next;
-            free(time_iter->data);
             free(time_iter);
             time_iter = next;
         }
-        free(udp_iter->data);
+
+        struct list *next = udp_iter->next;
+        free(udp_info);
         free(udp_iter);
         udp_iter = next;
     }
 
-    /* Free the VPN address */
-    struct list *vpn_iter = group->vpn_addrs;
+    /* Free the vpn_addrs */
+    struct list *vpn_iter = enc->vpn_addrs;
     while (vpn_iter != NULL)
     {
+        struct sockaddr_in *vpn_addr = (struct sockaddr_in *)(vpn_iter->data);
+        free(vpn_addr);
         struct list *next = vpn_iter->next;
-        free(vpn_iter->data);
         free(vpn_iter);
         vpn_iter = next;
     }
 
     /* Free the encoder */
-    free(group->enc->packet_buf);
-    free(group->enc);
-
-    /* Free the decoder */
-    for (int i = 0; i < group->dec->block_num; i++)
-    {
-        free(group->dec->data_blocks[i]);
-    }
-    free(group->dec->data_blocks);
-    free(group->dec->marks);
-    free(group->dec);
-
-    /* Destroy the mutex */
-    pthread_mutex_destroy(&(group->mutex));
-
-    /* Free the group */
-    free(group);
+    free(enc);
 }
 
 /**
- * Clean all groups.
+ * Free the decoder
  *
+ * @param dec: The decoder
+ * @return void
  */
-void clean_all_group()
+void free_decoder(struct decoder *dec)
 {
-    struct list *end_iter = group_iter;
-    if (group_iter == NULL)
-        return;
+    pthread_mutex_unlock(&(dec->mutex));
+    pthread_mutex_lock(&decoder_list_mutex);
+
+    pthread_mutex_lock(&(dec->mutex));
+    pthread_mutex_unlock(&(dec->mutex));
+
+    for (int i = 0; i < dec->block_num; i++)
+    {
+        free(dec->data_blocks[i]);
+    }
+    free(dec->data_blocks);
+    free(dec->marks);
+    free(dec);
+    struct list *end_iter = decoder_iter;
     do
     {
-        struct group *group = (struct group *)(group_iter->data);
-        struct list *next = group_iter->next;
-        free_group(group);
-        free(group_iter);
-        group_iter = next;
-    } while (group_iter != end_iter && group_iter != NULL);
+        struct decoder *dec_iter = (struct decoder *)(decoder_iter->data);
+        if (dec_iter->groupID == dec->groupID)
+        {
+            if (decoder_before == decoder_iter)
+            {
+                free(decoder_iter);
+                decoder_iter = NULL;
+                decoder_before = NULL;
+            }
+            else
+            {
+                decoder_before->next = decoder_iter->next;
+                free(decoder_iter);
+                decoder_iter = decoder_before->next;
+            }
+            break;
+        }
+        decoder_before = decoder_iter;
+        decoder_iter = decoder_iter->next;
+    } while (decoder_iter != end_iter);
+    pthread_mutex_unlock(&decoder_list_mutex);
 }
 
 /**
@@ -865,36 +989,36 @@ unsigned int get_groupId()
  * Update the UDP info list.
  *
  * @param udp_info_list: The UDP info list
- * @param udp_info: The UDP info
+ * @param new_udp_info: The UDP info
  */
-struct list *update_udp_info_list(struct list *udp_info_list, struct udp_info *udp_info)
+struct list *update_udp_info_list(struct list *udp_info_list, struct udp_info *new_udp_info)
 {
-    struct list *udp_info_item = udp_info_list;
+    struct list *udp_info_iter = udp_info_list;
 
-    while (udp_info_item) // != NULL
+    while (udp_info_iter) // != NULL
     {
-        struct udp_info *info = (struct udp_info *)(udp_info_item->data);
-        if (info->addr->sin_addr.s_addr == udp_info->addr->sin_addr.s_addr && info->addr->sin_port == udp_info->addr->sin_port)
+        struct udp_info *info = (struct udp_info *)(udp_info_iter->data);
+        if (info->addr->sin_addr.s_addr == new_udp_info->addr->sin_addr.s_addr && info->addr->sin_port == new_udp_info->addr->sin_port)
         {
             if (info->time_head == NULL)
             {
-                info->time_head = udp_info->time_head;
-                info->time_tail = udp_info->time_tail;
+                info->time_head = new_udp_info->time_head;
+                info->time_tail = new_udp_info->time_tail;
             }
             else
             {
-                info->time_tail->next = udp_info->time_head;
-                info->time_tail = udp_info->time_tail;
+                info->time_tail->next = new_udp_info->time_head;
+                info->time_tail = new_udp_info->time_tail;
             }
-            free(udp_info->addr);
-            free(udp_info);
+            free(new_udp_info->addr);
+            free(new_udp_info);
             return udp_info_list;
         }
-        udp_info_item = udp_info_item->next;
+        udp_info_iter = udp_info_iter->next;
     }
 
     struct list *new_udp_info_item = (struct list *)malloc(sizeof(struct list));
-    new_udp_info_item->data = udp_info;
+    new_udp_info_item->data = new_udp_info;
     new_udp_info_item->next = udp_info_list;
     return new_udp_info_item;
 }

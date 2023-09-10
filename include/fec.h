@@ -18,10 +18,11 @@
 #include <sys/time.h>
 #include "../lib/rs.h"
 #include "config.h"
+#include "../lib/threadpool.h"
 
 // #define DEC_TIMEOUT ((long)1e8)
 // #define ENC_TIMEOUT ((long)1e8)
-#define GROUP_TIMEOUT ((long)1e10)
+#define UDP_TIMEOUT ((long)1e9)
 
 #define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
@@ -42,7 +43,8 @@ struct list
     struct list *next;
 };
 
-struct time_pair{
+struct time_pair
+{
     long packet_send;
     struct timespec packet_receive;
 };
@@ -58,7 +60,6 @@ struct group
 {
     unsigned int groupID;
 
-    struct list *udp_infos;
     struct list *vpn_addrs;
 
     struct encoder *enc;
@@ -75,11 +76,19 @@ struct encoder
     unsigned int data_size;
     unsigned int packet_num;
 
+    struct list *udp_infos;
+    struct list *vpn_addrs;
+
+    pthread_cond_t cond;
+    pthread_mutex_t mutex;
+
     struct timespec touch;
 };
 
 struct decoder
 {
+    unsigned int groupID;
+
     unsigned int data_size;
     unsigned int block_size;
 
@@ -92,7 +101,12 @@ struct decoder
     unsigned char **data_blocks;
     unsigned char *marks;
 
-    struct timespec touch;
+    struct list *udp_infos;
+
+    int signaled;
+
+    pthread_cond_t cond;
+    pthread_mutex_t mutex;
 };
 
 struct rx_packet
@@ -112,6 +126,8 @@ struct input_param
     unsigned int packet_size;
 
     int udp_fd;
+
+    struct sockaddr_in udp_addr;
 };
 
 struct output_param
@@ -131,8 +147,8 @@ struct enc_param
 {
     pthread_t tid;
 
+    struct group *group;
     struct encoder *enc;
-    struct list *udp_infos;
 
     int udp_fd;
 };
@@ -142,13 +158,18 @@ struct dec_param
     pthread_t tid;
 
     struct group *group;
+    struct decoder *dec;
 
     int tun_fd;
 };
 
-extern pthread_mutex_t group_list_mutex;
-extern struct list *group_iter;
-extern struct list *group_before;
+extern pthread_mutex_t decoder_list_mutex;
+extern struct list *decoder_iter;
+extern struct list *decoder_before;
+
+extern pthread_mutex_t encoder_list_mutex;
+extern struct list *encoder_iter;
+extern struct list *encoder_before;
 
 extern struct list *rx_list;
 extern unsigned int rx_num;
@@ -164,24 +185,32 @@ void *serve_output(void *args);
 void *encode(void *args);
 void *decode(void *args);
 
+
+void print_udp_infos(struct list *udp_infos);
+
+void print_rx();
+
 void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int groupId);
 
 void clean_all_rx();
 
-struct group *get_group(unsigned int groupID, struct sockaddr_in *addr, int udp_fd);
+struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr);
 
-struct group *new_group(unsigned int groupID, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num);
+struct decoder *get_decoder(unsigned int groupID);
 
-void free_group(struct group *group);
+struct encoder *new_encoder(struct list *udp_infos);
 
-void clean_all_group();
+struct decoder *new_decoder(unsigned int groupId, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num);
+
+void free_encoder(struct encoder *enc);
+
+void free_decoder(struct decoder *dec);
 
 struct sockaddr_in *get_packet_addr(unsigned char *buf, int in_or_out);
 
 unsigned int get_packet_len(unsigned char *buf);
 
 unsigned int get_groupId();
-
 
 struct list *update_udp_info_list(struct list *udp_info_list, struct udp_info *udp_info);
 

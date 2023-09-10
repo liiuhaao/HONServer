@@ -38,6 +38,7 @@ int allocate_tun(char *tun_name, char *tun_ip, int mtu)
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "ifconfig tun0 %s/16 mtu %d up", tun_ip, mtu);
     run(cmd);
+    printf("TUN %d is allocated with name: %s, ip: %s, mtu: %d\n", tun_fd, tun_name, tun_ip, mtu);
     return tun_fd;
 }
 
@@ -174,7 +175,6 @@ void signal_handler(int sig)
 {
     printf("\n");
 
-    clean_all_group();
     clean_all_rx();
     cleanup_iptables();
 
@@ -213,15 +213,23 @@ int main(int argc, char *argv[])
     socklen_t tcp_addr_len = sizeof(tcp_addr);
 
     fec_init();
-    pthread_mutex_init(&group_list_mutex, NULL);
+    pthread_mutex_init(&encoder_list_mutex, NULL);
+    pthread_mutex_init(&decoder_list_mutex, NULL);
     pthread_mutex_init(&rx_mutex, NULL);
     pthread_mutex_init(&tx_mutex, NULL);
 
-    threadpool_t *pool;
     assert((pool = threadpool_create(THREAD, QUEUE, 0)) != NULL);
     fprintf(stderr, "Pool started with %d threads and "
                     "queue size of %d\n",
             THREAD, QUEUE);
+
+    config.drop_rate = 0;
+    config.parity_rate = 0;
+    config.max_RX_num = 100;
+    config.max_TX_num = 10;
+    config.encode_timeout = 1000;
+    config.decode_timeout = 10000;
+    config.rx_timeout = 1000;
 
     while (1)
     {
@@ -290,6 +298,10 @@ int main(int argc, char *argv[])
             memcpy(input_p->packet, tun_buf, read_bytes);
             input_p->packet_size = read_bytes;
             input_p->udp_fd = udp_fd;
+            input_p->udp_addr.sin_family = udp_addr.sin_family;
+            input_p->udp_addr.sin_addr.s_addr = udp_addr.sin_addr.s_addr;
+            input_p->udp_addr.sin_port = udp_addr.sin_port;
+            // printf(">>UDP Send o %s:%i\n", inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
             threadpool_add(pool, (void *)serve_input, (void *)input_p, 0);
         }
 
@@ -303,7 +315,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            // printf("UDP received %d bytes from %s:%i\n", read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
+            printf("UDP %d received %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
