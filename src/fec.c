@@ -154,41 +154,46 @@ void *serve_output(void *args)
     pthread_mutex_lock(&(dec->mutex));
     pthread_mutex_unlock(&decoder_list_mutex);
 
-    /* Update the UDP info */
-    struct udp_info *udp_info = (struct udp_info *)malloc(sizeof(struct udp_info));
-    udp_info->addr = udp_addr;
-    if (send_time <= 0)
-    {
-        udp_info->time_head = NULL;
-    }
-    else
-    {
-        udp_info->time_head = (struct list *)malloc(sizeof(struct list));
-        struct time_pair *tp = (struct time_pair *)malloc(sizeof(struct time_pair));
-        tp->packet_send = packet_sendtime;
-        clock_gettime(CLOCK_REALTIME, &(tp->packet_receive));
-        udp_info->time_head->data = tp;
-        udp_info->time_tail = udp_info->time_head;
-        udp_info->time_tail->next = NULL;
-    }
-    dec->udp_infos = update_udp_info_list(dec->udp_infos, udp_info);
-
     /* Check if the packet is received */
     if ((dec->marks[index]))
     {
         dec->receive_num++;
         dec->marks[index] = 0;
-        memcpy(dec->data_blocks[index], packet + pos, dec->block_size);
-        free(packet);
 
-        /* Decode the data blocks if enough blocks are received */
-        if (dec->receive_num == dec->data_num)
+        if (dec->receive_num <= dec->data_num)
         {
-            struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
-            dec_p->dec = dec;
-            dec_p->tun_fd = tun_fd;
-            dec_p->udp_fd = udp_fd;
-            threadpool_add(pool, (void *)decode, (void *)dec_p, 0);
+            /* Copy the data block to the buffer */
+            memcpy(dec->data_blocks[index], packet + pos, dec->block_size);
+            free(packet);
+
+            /* Update the UDP info */
+            struct udp_info *udp_info = (struct udp_info *)malloc(sizeof(struct udp_info));
+            udp_info->addr = udp_addr;
+            if (send_time <= 0)
+            {
+                udp_info->time_head = NULL;
+            }
+            else
+            {
+                udp_info->time_head = (struct list *)malloc(sizeof(struct list));
+                struct time_pair *tp = (struct time_pair *)malloc(sizeof(struct time_pair));
+                tp->packet_send = packet_sendtime;
+                clock_gettime(CLOCK_REALTIME, &(tp->packet_receive));
+                udp_info->time_head->data = tp;
+                udp_info->time_tail = udp_info->time_head;
+                udp_info->time_tail->next = NULL;
+            }
+            dec->udp_infos = update_udp_info_list(dec->udp_infos, udp_info);
+
+            /* Decode the data blocks if enough blocks are received */
+            if (dec->receive_num == dec->data_num)
+            {
+                struct dec_param *dec_p = (struct dec_param *)malloc(sizeof(struct dec_param));
+                dec_p->dec = dec;
+                dec_p->tun_fd = tun_fd;
+                dec_p->udp_fd = udp_fd;
+                decode((void *)dec_p);
+            }
         }
     }
 
@@ -207,9 +212,7 @@ void *encode(void *args)
 {
     /* Get the encoding parameters */
     struct enc_param *enc_p = (struct enc_param *)args;
-    // struct group *group = enc_p->group;
     struct encoder *enc = enc_p->enc;
-    struct list *udp_infos = enc->udp_infos;
     int udp_fd = enc_p->udp_fd;
     free(enc_p);
 
@@ -260,17 +263,19 @@ void *encode(void *args)
     for (unsigned int index = 0; index < block_num; index++)
     {
         /* Select UDP address for sending */
-        struct list *udp_select = udp_infos;
-        struct list *udp_iter = udp_infos;
-        long first_time = 2147483647;
+        struct list *udp_select = enc->udp_infos;
+        struct list *udp_iter = enc->udp_infos;
+        long first_time = -1;
+        int first = 1;
         while (udp_iter != NULL)
         {
             struct udp_info *info = (struct udp_info *)(udp_iter->data);
             if (info->time_head != NULL)
             {
                 long udp_time = ((struct time_pair *)(info->time_head->data))->packet_send;
-                if (udp_time < first_time)
+                if (first || udp_time < first_time)
                 {
+                    first = 0;
                     first_time = udp_time;
                     udp_select = udp_iter;
                 }
@@ -322,9 +327,7 @@ void *encode(void *args)
         socklen_t udp_addr_len = sizeof(*udp_addr);
 
         /* Send the data block over the network */
-        // printf("UDP %d try to send bytes to %s:%i\n", udp_fd, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
         int write_bytes = sendto(udp_fd, buffer, block_size + pos, 0, (const struct sockaddr *)udp_addr, udp_addr_len);
-        printf("UDP %d Send %d bytes to %s:%i\n", udp_fd, write_bytes, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
         if (write_bytes < 0)
         {
             perror("Error while sendding to udp_fd!!!");
@@ -687,7 +690,6 @@ struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr
     /* If the encoder is found, update info */
     if (res_enc != NULL)
     {
-        // clock_gettime(CLOCK_REALTIME, &(res_enc->touch));
         if (udp_infos != NULL)
         {
             struct list *udp_iter = udp_infos;
@@ -713,8 +715,6 @@ struct encoder *new_encoder(struct list *udp_infos)
     enc->vpn_addrs = NULL;
 
     pthread_mutex_init(&(enc->mutex), NULL);
-
-    clock_gettime(CLOCK_REALTIME, &(enc->touch));
 
     struct list *new_encoder_item = (struct list *)malloc(sizeof(struct list));
     new_encoder_item->data = enc;
@@ -761,6 +761,7 @@ struct decoder *get_decoder(unsigned int groupID)
         long time_delta = (now.tv_sec - dec->touch.tv_sec) * (long)1e9 + (now.tv_nsec - dec->touch.tv_nsec);
         if (time_delta > config.decode_timeout * 1000 && (pthread_mutex_trylock(&dec->mutex) == 0))
         {
+            printf("timeout: %ld\n", time_delta / 1000);
             pthread_mutex_unlock(&dec->mutex);
             free_decoder(dec);
             if (decoder_before == NULL)
@@ -930,7 +931,7 @@ struct sockaddr_in *get_packet_addr(unsigned char *buf, int in_or_out)
     }
     else
     {
-        // printf("Unknown protocol\n");
+        printf("Unknown protocol %d\n", ip_hdr->protocol);
         return NULL;
     }
 
@@ -1024,9 +1025,10 @@ struct list *update_udp_info_list(struct list *udp_info_list, struct udp_info *n
  */
 struct list *update_vpn_address_list(struct list *vpn_addr_list, struct sockaddr_in *vpn_addr)
 {
+    int random_num = rand() % 100 + 1;
     struct list *vpn_addr_item = vpn_addr_list;
 
-    while (vpn_addr_item) // != NULL
+    while (vpn_addr_item != NULL) // != NULL
     {
         struct sockaddr_in *addr = (struct sockaddr_in *)(vpn_addr_item->data);
         if (addr->sin_addr.s_addr == vpn_addr->sin_addr.s_addr && addr->sin_port == vpn_addr->sin_port)

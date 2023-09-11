@@ -227,7 +227,7 @@ int main(int argc, char *argv[])
     config.parity_rate = 0;
     config.max_RX_num = 100;
     config.max_TX_num = 10;
-    config.encode_timeout = 5000;
+    config.encode_timeout = 1000;
     config.decode_timeout = 1000000;
     config.rx_timeout = 1000;
 
@@ -315,7 +315,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            // printf("UDP %d received %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
+            printf("UDP %d received %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
