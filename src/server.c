@@ -231,6 +231,10 @@ int main(int argc, char *argv[])
     config.decode_timeout = 1000000;
     config.rx_timeout = 1000;
 
+    threadpool_add(pool, (void *)monitor_encoder, (void *)&udp_fd, 0);
+    threadpool_add(pool, (void *)monitor_decoder, NULL, 0);
+    threadpool_add(pool, (void *)monitor_rx, (void *)&tun_fd, 0);
+
     while (1)
     {
         fd_set readset;
@@ -291,7 +295,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            // printf("TUN received %d bytes\n", read_bytes);
+            // printf("TUN %d receive %d bytes\n", tun_fd, read_bytes);
 
             struct input_param *input_p = (struct input_param *)malloc(sizeof(struct input_param));
             input_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
@@ -315,7 +319,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("UDP %d received %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
+            printf("UDP %d receive %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));

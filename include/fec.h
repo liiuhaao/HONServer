@@ -22,7 +22,7 @@
 
 // #define DEC_TIMEOUT ((long)1e8)
 // #define ENC_TIMEOUT ((long)1e8)
-#define UDP_TIMEOUT ((long)1e11)
+#define UDP_TIMEOUT ((long)1e13)
 
 #define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
@@ -81,7 +81,8 @@ struct encoder
 
     pthread_mutex_t mutex;
 
-    struct timespec touch;
+    struct timespec enc_touch;
+    struct timespec dead_touch;
 };
 
 struct decoder
@@ -181,25 +182,31 @@ void *serve_output(void *args);
 void *encode(void *args);
 void *decode(void *args);
 
-void print_udp_infos(struct list *udp_infos);
-
-void print_rx();
-
-void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int groupId);
-
-void clean_all_rx();
-
 struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr, int udp_fd);
-
-struct decoder *get_decoder(unsigned int groupID);
 
 struct encoder *new_encoder(struct list *udp_infos);
 
-struct decoder *new_decoder(unsigned int groupId, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num);
+void *monitor_encoder(void *arg);
 
 void free_encoder(struct encoder *enc);
 
+struct decoder *get_decoder(unsigned int groupID);
+
+struct decoder *new_decoder(unsigned int groupId, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num);
+
+void *monitor_decoder(void *arg);
+
 void free_decoder(struct decoder *dec);
+
+void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int groupId);
+
+void monitor_rx(void *arg);
+
+void clean_all_rx();
+
+void print_udp_infos(struct list *udp_infos);
+
+void print_rx();
 
 struct sockaddr_in *get_packet_addr(unsigned char *buf, int in_or_out);
 
