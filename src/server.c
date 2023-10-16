@@ -212,8 +212,9 @@ int main(int argc, char *argv[])
     struct sockaddr_in tcp_addr;
     socklen_t tcp_addr_len = sizeof(tcp_addr);
 
+    struct encoder *enc = NULL;
+
     fec_init();
-    pthread_mutex_init(&encoder_list_mutex, NULL);
     pthread_mutex_init(&decoder_list_mutex, NULL);
     pthread_mutex_init(&rx_mutex, NULL);
     pthread_mutex_init(&tx_mutex, NULL);
@@ -224,14 +225,15 @@ int main(int argc, char *argv[])
             THREAD, QUEUE);
 
     config.drop_rate = 0;
-    config.parity_rate = 0;
-    config.max_RX_num = 100;
-    config.max_TX_num = 10;
-    config.encode_timeout = 1000;
+    config.data_num = 10;
+    config.parity_num = 5;
+    config.rx_num = 100;
+    config.encode_timeout = 1000000;
     config.decode_timeout = 1000000;
-    config.rx_timeout = 1000;
+    config.rx_timeout = 100000;
+    enc = new_encoder();
 
-    threadpool_add(pool, (void *)monitor_encoder, (void *)&udp_fd, 0);
+    // threadpool_add(pool, (void *)monitor_encoder, (void *)&udp_fd, 0);
     threadpool_add(pool, (void *)monitor_decoder, NULL, 0);
     threadpool_add(pool, (void *)monitor_rx, (void *)&tun_fd, 0);
 
@@ -268,6 +270,9 @@ int main(int argc, char *argv[])
                 }
                 else
                 {
+                    printf("Get syncing signal!!!\n");
+                    clean_all();
+
                     tcp_buf[bytes_read] = '\0';
                     printf("Syncing config: %s\n", tcp_buf);
                     parse_config(tcp_buf, &config);
@@ -281,6 +286,8 @@ int main(int argc, char *argv[])
                     /* Send response */
                     const char *response = "200";
                     write(client_fd, response, strlen(response));
+
+                    enc = new_encoder();
                 }
             }
         }
@@ -305,8 +312,9 @@ int main(int argc, char *argv[])
             input_p->udp_addr.sin_family = udp_addr.sin_family;
             input_p->udp_addr.sin_addr.s_addr = udp_addr.sin_addr.s_addr;
             input_p->udp_addr.sin_port = udp_addr.sin_port;
-            // printf(">>UDP Send o %s:%i\n", inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
-            threadpool_add(pool, (void *)serve_input, (void *)input_p, 0);
+            input_p->enc = enc;
+            serve_input(input_p);
+            // threadpool_add(pool, (void *)serve_input, (void *)input_p, 0);
         }
 
         /* Receive data from the client */
@@ -319,19 +327,20 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("UDP %d receive %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
+            // printf("UDP %d receive %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
             memcpy(output_p->packet, udp_buf, read_bytes);
-            output_p->packet_size = read_bytes;
+            output_p->hon_size = read_bytes;
             output_p->tun_fd = tun_fd;
             output_p->udp_fd = udp_fd;
             output_p->udp_addr.sin_family = udp_addr.sin_family;
             output_p->udp_addr.sin_addr.s_addr = udp_addr.sin_addr.s_addr;
             output_p->udp_addr.sin_port = udp_addr.sin_port;
-
-            threadpool_add(pool, (void *)serve_output, (void *)output_p, 0);
+            output_p->enc = enc;
+            serve_output(output_p);
+            // threadpool_add(pool, (void *)serve_output, (void *)output_p, 0);
             // pthread_create(&(output_p->tid), NULL, serve_output, (void *)output_p);
         }
     }

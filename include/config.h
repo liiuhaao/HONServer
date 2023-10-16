@@ -4,9 +4,9 @@
 struct HONConfig
 {
     int drop_rate;
-    int parity_rate;
-    int max_RX_num;
-    int max_TX_num;
+    int data_num;
+    int parity_num;
+    int rx_num;
     long encode_timeout;
     long decode_timeout;
     long rx_timeout;

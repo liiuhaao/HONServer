@@ -6,12 +6,16 @@ struct HONConfig config;
 
 void parse_config(const char *json_str, struct HONConfig *config)
 {
-    sscanf(json_str, "{\n\"dropRate\": %d,\n\"parityRate\": %d,\n\"maxRXNum\": %d,\n\"maxTXNum\": %d,\n\"encodeTimeout\": %ld,\n\"decodeTimeout\": %ld,\n\"rxTimeout\": %ld,\n\"primaryProbability\": %d\n}\n",
-           &config->drop_rate, &config->parity_rate, &config->max_RX_num, &config->max_TX_num, &config->encode_timeout, &config->decode_timeout, &config->rx_timeout, &config->primary_probability);
+    sscanf(json_str, "{\n\"dropRate\": %d,\n\"dataNum\": %d,\n\"parityNum\": %d,\n\"rxNum\": %d,\n\"encodeTimeout\": %ld,\n\"decodeTimeout\": %ld,\n\"rxTimeout\": %ld,\n\"primaryProbability\": %d\n}\n",
+           &config->drop_rate, &config->data_num, &config->parity_num, &config->rx_num, &config->encode_timeout, &config->decode_timeout, &config->rx_timeout, &config->primary_probability);
+    if (config->data_num <= 0)
+    {
+        config->data_num = 1;
+    }
 }
 
 void serialize_config(struct HONConfig *config, char *buffer)
 {
-    sprintf(buffer, "{\n\"drop_rate\": %d,\n\"parity_rate\": %d,\n\"max_RX_num\": %d,\n\"max_TX_num\": %d,\n\"encode_timeout\": %ld,\n\"decode_timeout\": %ld,\n\"rx_timeout\": %ld,\n\"primary_probability\": %d\n}\n",
-            config->drop_rate, config->parity_rate, config->max_RX_num, config->max_TX_num, config->encode_timeout, config->decode_timeout, config->rx_timeout, config->primary_probability);
+    sprintf(buffer, "{\n\"drop_rate\": %d,\n\"data_num\": %d,\n\"parity_num\": %d,\n\"rx_num\": %d,\n\"encode_timeout\": %ld,\n\"decode_timeout\": %ld,\n\"rx_timeout\": %ld,\n\"primary_probability\": %d\n}\n",
+            config->drop_rate, config->data_num, config->parity_num, config->rx_num, config->encode_timeout, config->decode_timeout, config->rx_timeout, config->primary_probability);
 }

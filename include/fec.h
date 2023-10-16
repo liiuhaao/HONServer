@@ -20,10 +20,6 @@
 #include "config.h"
 #include "../lib/threadpool.h"
 
-// #define DEC_TIMEOUT ((long)1e8)
-// #define ENC_TIMEOUT ((long)1e8)
-#define UDP_TIMEOUT ((long)1e13)
-
 #define MAX_BLOCK_SIZE (1200 - 20 - 8 - 24) // 1448
 #define MAX_DATA_NUM 64
 #define MAX_PACKET_BUF MAX_BLOCK_SIZE *MAX_DATA_NUM // 46336
@@ -52,56 +48,37 @@ struct time_pair
 struct udp_info
 {
     struct sockaddr_in *addr;
+    char type;
     struct list *time_head;
     struct list *time_tail;
 };
 
-struct group
-{
-    unsigned int groupID;
-
-    struct list *vpn_addrs;
-
-    struct encoder *enc;
-    struct decoder *dec;
-
-    pthread_mutex_t mutex;
-
-    struct timespec touch;
-};
-
 struct encoder
 {
-    unsigned char *packet_buf;
-    unsigned int data_size;
-    unsigned int packet_num;
+    unsigned int group_id;
+    int index;
+    unsigned char **packet_buffers;
+    unsigned int *packet_sizes;
 
     struct list *udp_infos;
-    struct list *vpn_addrs;
+    // struct list *vpn_addrs;
 
     pthread_mutex_t mutex;
 
-    struct timespec enc_touch;
     struct timespec dead_touch;
 };
 
 struct decoder
 {
-    unsigned int groupID;
+    unsigned int group_id;
 
-    unsigned int data_size;
-    unsigned int block_size;
-
-    unsigned int data_num;
-    unsigned int block_num;
     unsigned int receive_num;
 
-    unsigned char decoded;
+    unsigned int block_size;
 
     unsigned char **data_blocks;
     unsigned char *marks;
-
-    struct list *udp_infos;
+    unsigned int *packet_sizes;
 
     pthread_mutex_t mutex;
     struct timespec touch;
@@ -109,7 +86,8 @@ struct decoder
 
 struct rx_packet
 {
-    unsigned int id;
+    unsigned int group_id;
+    unsigned int index;
     unsigned char *packet;
     unsigned int packet_len;
 
@@ -126,6 +104,8 @@ struct input_param
     int udp_fd;
 
     struct sockaddr_in udp_addr;
+
+    struct encoder *enc;
 };
 
 struct output_param
@@ -133,12 +113,14 @@ struct output_param
     pthread_t tid;
 
     unsigned char *packet;
-    unsigned int packet_size;
+    unsigned int hon_size;
 
     int tun_fd;
     int udp_fd;
 
     struct sockaddr_in udp_addr;
+
+    struct encoder *enc;
 };
 
 struct enc_param
@@ -147,6 +129,7 @@ struct enc_param
 
     struct group *group;
     struct encoder *enc;
+    struct udp_info *udp;
 
     int udp_fd;
 };
@@ -165,8 +148,7 @@ struct dec_param
 extern pthread_mutex_t decoder_list_mutex;
 extern struct list *decoder_list;
 
-extern pthread_mutex_t encoder_list_mutex;
-extern struct list *encoder_list;
+extern struct encoder *enc;
 
 extern struct list *rx_list;
 extern unsigned int rx_num;
@@ -179,32 +161,35 @@ extern pthread_mutex_t tx_mutex;
 void *serve_input(void *args);
 void *serve_output(void *args);
 
+void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_id, unsigned int index, struct udp_info *udp);
+
 void *encode(void *args);
 void *decode(void *args);
 
-struct encoder *get_encoder(struct list *udp_infos, struct sockaddr_in *vpn_addr, int udp_fd);
+void free_encoder_buffers(int free_self);
+void free_encoder_sizes();
+void free_encoder_udp_infos();
+void free_encoder();
 
-struct encoder *new_encoder(struct list *udp_infos);
+struct encoder *new_encoder();
 
-void *monitor_encoder(void *arg);
+struct decoder *get_decoder(unsigned int group_id);
 
-void free_encoder(struct encoder *enc);
-
-struct decoder *get_decoder(unsigned int groupID);
-
-struct decoder *new_decoder(unsigned int groupId, unsigned int data_size, unsigned int block_size, unsigned int data_num, unsigned int block_num);
+struct decoder *new_decoder(unsigned int groupId);
 
 void *monitor_decoder(void *arg);
 
 void free_decoder(struct decoder *dec);
 
-void rx_insert(int tun_fd, unsigned char *buf, unsigned int len, unsigned int groupId);
+void rx_insert(int tun_fd, unsigned char *buf, unsigned int group_id, unsigned int index);
 
 void monitor_rx(void *arg);
 
 void clean_all_rx();
 
 void print_udp_infos(struct list *udp_infos);
+
+void rx_send(int tun_fd);
 
 void print_rx();
 
@@ -216,6 +201,6 @@ unsigned int get_groupId();
 
 struct list *update_udp_info_list(struct list *udp_info_list, struct udp_info *udp_info);
 
-struct list *update_vpn_address_list(struct list *addr_list, struct sockaddr_in *addr);
+void clean_all();
 
 #endif
