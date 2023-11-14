@@ -225,8 +225,8 @@ int main(int argc, char *argv[])
             THREAD, QUEUE);
 
     config.drop_rate = 0;
-    config.data_num = 10;
-    config.parity_num = 5;
+    config.data_num = 5;
+    config.parity_num = 0;
     config.rx_num = 100;
     config.encode_timeout = 1000000;
     config.decode_timeout = 1000000;
@@ -270,6 +270,17 @@ int main(int argc, char *argv[])
                 }
                 else
                 {
+                    rx_time = -1;
+                    rx_max = -1;
+                    rx_min = 1e18;
+                    enc_time = -1;
+                    enc_max = -1;
+                    enc_min = 1e18;
+                    dec_time = -1;
+                    dec_max = -1;
+                    dec_min = 1e18;
+                    rx_group_id = 0;
+                    rx_index = 0;
                     printf("Get syncing signal!!!\n");
                     clean_all();
 
@@ -302,7 +313,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            // printf("TUN %d receive %d bytes\n", tun_fd, read_bytes);
+            printf("TUN %d receive %d bytes\n", tun_fd, read_bytes);
 
             struct input_param *input_p = (struct input_param *)malloc(sizeof(struct input_param));
             input_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
@@ -327,7 +338,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            // printf("UDP %d receive %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
+            printf("UDP %d receive %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));

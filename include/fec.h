@@ -155,8 +155,25 @@ extern unsigned int rx_num;
 extern unsigned int rx_id;
 extern pthread_mutex_t rx_mutex;
 
+extern double rx_time;
+extern double rx_min;
+extern double rx_max;
+
+
+extern double enc_time;
+extern double enc_min;
+extern double enc_max;
+
+
+extern double dec_time;
+extern double dec_min;
+extern double dec_max;
+
 extern unsigned int tx_id;
 extern pthread_mutex_t tx_mutex;
+
+extern unsigned int rx_group_id;
+extern unsigned int rx_index;
 
 void *serve_input(void *args);
 void *serve_output(void *args);
