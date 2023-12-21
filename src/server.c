@@ -270,9 +270,11 @@ int main(int argc, char *argv[])
                 }
                 else
                 {
-                    rx_time = -1;
+                    rx_time = 0;
+                    rx_count = 0;
                     rx_max = -1;
                     rx_min = 1e18;
+                    rx_timeout = 0;
                     enc_time = -1;
                     enc_max = -1;
                     enc_min = 1e18;
@@ -313,7 +315,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("TUN %d receive %d bytes\n", tun_fd, read_bytes);
+            // printf("TUN %d receive %d bytes\n", tun_fd, read_bytes);
 
             struct input_param *input_p = (struct input_param *)malloc(sizeof(struct input_param));
             input_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
@@ -338,7 +340,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("UDP %d receive %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
+            // printf("UDP %d receive %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));

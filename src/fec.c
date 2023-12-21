@@ -10,8 +10,11 @@ unsigned int rx_num = 0;
 unsigned int rx_group_id = 0;
 unsigned int rx_index = 0;
 double rx_time = -1;
+unsigned long long rx_count = 0;
 double rx_min = 1e18;
 double rx_max = -1;
+
+unsigned long long rx_timeout = 0;
 float rolling_time = 0.9;
 pthread_mutex_t rx_mutex;
 
@@ -113,27 +116,27 @@ void *serve_input(void *args) // from server to client
     {
         if (config.parity_num > 0)
         {
-            printf("encode [%d/%d/%d]\n", enc->index + 1, config.data_num, config.parity_num);
+            // printf("encode [%d/%d/%d]\n", enc->index + 1, config.data_num, config.parity_num);
             struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
             enc_p->enc = enc;
             enc_p->udp_fd = udp_fd;
             enc_p->udp = parity_udp;
-            // struct timespec before_enc;
-            // clock_gettime(CLOCK_REALTIME, &before_enc);
+            struct timespec before_enc;
+            clock_gettime(CLOCK_REALTIME, &before_enc);
             encode((void *)enc_p);
-            // struct timespec after_enc;
-            // clock_gettime(CLOCK_REALTIME, &after_enc);
-            // long time_delta = (after_enc.tv_sec - before_enc.tv_sec) * (long)1e9 + (after_enc.tv_nsec - before_enc.tv_nsec);
-            // if (enc_time < 0)
-            // {
-            //     enc_time = time_delta;
-            // }
-            // else
-            // {
-            //     enc_time = rolling_time * enc_time + (1 - rolling_time) * time_delta;
-            // }
-            // enc_min = min(enc_min, time_delta);
-            // enc_max = max(enc_max, time_delta);
+            struct timespec after_enc;
+            clock_gettime(CLOCK_REALTIME, &after_enc);
+            long time_delta = (after_enc.tv_sec - before_enc.tv_sec) * (long)1e9 + (after_enc.tv_nsec - before_enc.tv_nsec);
+            if (enc_time < 0)
+            {
+                enc_time = time_delta;
+            }
+            else
+            {
+                enc_time = rolling_time * enc_time + (1 - rolling_time) * time_delta;
+            }
+            enc_min = min(enc_min, time_delta);
+            enc_max = max(enc_max, time_delta);
             // printf(">>>>>encode time: %ld min: %lf max: %lf avg: %lf\n", time_delta, enc_min, enc_max, enc_time);
         }
 
@@ -203,7 +206,7 @@ void *serve_output(void *args)
         return NULL;
     }
 
-    printf("OUTPUT group_id: %d, index: %d, data_num: %d, parity_num: %d, packet_sendtime: %ld udp_addr%s:%i\n", group_id, index, config.data_num, config.parity_num, packet_sendtime, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
+    printf("OUTPUT group_id: %d, index: %d, data_num: %d, parity_num: %d, hon_size: %d , packet_sendtime: %ld udp_addr: %s:%i\n", group_id, index, config.data_num, config.parity_num, hon_size, packet_sendtime, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
 
     /* Get the decoder */
     pthread_mutex_lock(&decoder_list_mutex);
@@ -299,22 +302,22 @@ void *serve_output(void *args)
                     dec_p->udp_fd = udp_fd;
                     // printf("decode [%d/%d/%d]\n", dec->receive_num, config.data_num, config.parity_num);
 
-                    // struct timespec before_dec;
-                    // clock_gettime(CLOCK_REALTIME, &before_dec);
+                    struct timespec before_dec;
+                    clock_gettime(CLOCK_REALTIME, &before_dec);
                     decode((void *)dec_p);
-                    // struct timespec after_dec;
-                    // clock_gettime(CLOCK_REALTIME, &after_dec);
-                    // long time_delta = (after_dec.tv_sec - before_dec.tv_sec) * (long)1e9 + (after_dec.tv_nsec - before_dec.tv_nsec);
-                    // if (dec_time < 0)
-                    // {
-                    //     dec_time = time_delta;
-                    // }
-                    // else
-                    // {
-                    //     dec_time = rolling_time * dec_time + (1 - rolling_time) * time_delta;
-                    // }
-                    // dec_min = min(dec_min, time_delta);
-                    // dec_max = max(dec_max, time_delta);
+                    struct timespec after_dec;
+                    clock_gettime(CLOCK_REALTIME, &after_dec);
+                    long time_delta = (after_dec.tv_sec - before_dec.tv_sec) * (long)1e9 + (after_dec.tv_nsec - before_dec.tv_nsec);
+                    if (dec_time < 0)
+                    {
+                        dec_time = time_delta;
+                    }
+                    else
+                    {
+                        dec_time = rolling_time * dec_time + (1 - rolling_time) * time_delta;
+                    }
+                    dec_min = min(dec_min, time_delta);
+                    dec_max = max(dec_max, time_delta);
                     // printf("<<<<<decode time: %ld min: %lf max: %lf avg: %lf\n", time_delta, dec_min, dec_max, dec_time);
 
                     for (int i = 0; i < config.data_num; i++)
@@ -511,7 +514,7 @@ void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_i
 
     /* Send the data block over the network */
     int write_bytes = sendto(udp_fd, buffer, len + pos, 0, (const struct sockaddr *)udp_addr, udp_addr_len);
-    printf("INPUT UDP %d send %d bytes to %s:%i [%d:%d/%d/%d]\n", udp_fd, write_bytes, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port), group_id, index, config.data_num, config.data_num + config.parity_num);
+    // printf("INPUT UDP %d send %d bytes to %s:%i [%d:%d/%d/%d]\n", udp_fd, write_bytes, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port), group_id, index, config.data_num, config.data_num + config.parity_num);
     if (write_bytes < 0)
     {
         perror("Error while sendding to udp_fd!!!");
@@ -649,12 +652,12 @@ void rx_insert(int tun_fd, unsigned char *buf, unsigned int group_id, unsigned i
     // printf("rx_insert group_id=%u index=%u %lu\n", group_id, index, (rx->touch.tv_sec * (long)1e9 + rx->touch.tv_nsec));
     memcpy(rx->packet, buf, len);
 
-    // if (rx_group_id > group_id || (rx_group_id == group_id && rx_index > index))
-    // {
-    //     printf("rx_insert rx_group_id=%u group_id=%u rx_index=%u index=%u\n", rx_group_id, group_id, rx_index, index);
-    //     pthread_mutex_unlock(&rx_mutex);
-    //     return;
-    // }
+    if (rx_group_id > group_id || (rx_group_id == group_id && rx_index > index))
+    {
+        // printf("rx_insert rx_group_id=%u group_id=%u rx_index=%u index=%u\n", rx_group_id, group_id, rx_index, index);
+        pthread_mutex_unlock(&rx_mutex);
+        return;
+    }
 
     struct list *new_rx_item = (struct list *)malloc(sizeof(struct list));
     new_rx_item->data = rx;
@@ -696,7 +699,7 @@ void rx_insert(int tun_fd, unsigned char *buf, unsigned int group_id, unsigned i
 
     pthread_mutex_unlock(&rx_mutex);
 
-    print_rx();
+    // print_rx();
 
     rx_send(tun_fd);
 }
@@ -716,18 +719,25 @@ void rx_send(int tun_fd)
         if (time_delta < config.rx_timeout * 1000 && rx_num < config.rx_num && ((rx_group_id != rx->group_id) || (rx_index != rx->index)))
             break;
 
-        // rx_min = min(rx_min, time_delta);
-        // rx_max = max(rx_max, time_delta);
-        // if (rx_time < 0)
-        // {
-        //     rx_time = time_delta;
-        // }
-        // else
-        // {
-        //     rx_time = rx_time * rolling_time + time_delta * (1 - rolling_time);
-        // }
+        if (time_delta >= config.rx_timeout * 1000)
+        {
+            rx_timeout++;
+        }
 
-        printf("TUN %d send %d bytes. groupId=%u index=%u time_delta=%ld rx_time=%f rx_min=%f rx_max=%f\n", tun_fd, rx->packet_len, rx->group_id, rx->index, time_delta, rx_time, rx_min, rx_max);
+        rx_min = min(rx_min, time_delta);
+        rx_max = max(rx_max, time_delta);
+        if (rx_count == 0)
+        {
+            rx_time = time_delta;
+            rx_count = 1;
+        }
+        else
+        {
+            rx_time += time_delta;
+            rx_count += 1;
+        }
+
+        printf("TUN %d send %d bytes. groupId=%u index=%u time_delta=%ld rx_time=%f rx_min=%f rx_max=%f timeout_rate=%f rx_rate=%f[%llu/%d]\n", tun_fd, rx->packet_len, rx->group_id, rx->index, time_delta, rx_time / rx_count, rx_min, rx_max, 1.0 * rx_timeout / rx_count, 1.0 * rx_count / (rx->group_id * config.data_num + rx->index + 1), rx_count, rx->group_id * config.data_num + rx->index + 1);
         int write_bytes = write(tun_fd, rx->packet, rx->packet_len);
         if (write_bytes < 0)
         {
