@@ -252,7 +252,7 @@ int main(int argc, char *argv[])
             break;
         }
 
-        /* Receive config from the client */
+        /* Receive data from the client */
         if (FD_ISSET(tcp_fd, &readset))
         {
             int client_fd = accept(tcp_fd, (struct sockaddr *)&tcp_addr, &tcp_addr_len);
@@ -263,44 +263,69 @@ int main(int argc, char *argv[])
             }
             else
             {
-                int bytes_read = read(client_fd, tcp_buf, sizeof(tcp_buf) - 1);
-                if (bytes_read < 0)
+                // 读取操作类型
+                unsigned char operation_type;
+                int bytes_read = read(client_fd, &operation_type, sizeof(operation_type));
+                if (bytes_read <= 0)
                 {
                     perror("Read failed");
                 }
                 else
                 {
-                    rx_time = 0;
-                    rx_count = 0;
-                    rx_max = -1;
-                    rx_min = 1e18;
-                    rx_timeout = 0;
-                    enc_time = -1;
-                    enc_max = -1;
-                    enc_min = 1e18;
-                    dec_time = -1;
-                    dec_max = -1;
-                    dec_min = 1e18;
-                    rx_group_id = 0;
-                    rx_index = 0;
-                    printf("Get syncing signal!!!\n");
-                    clean_all();
+                    if (operation_type == TYPE_SYNC_CONFIG)
+                    {
+                        rx_time = 0;
+                        rx_count = 0;
+                        rx_max = -1;
+                        rx_min = 1e18;
+                        rx_timeout = 0;
+                        enc_time = -1;
+                        enc_max = -1;
+                        enc_min = 1e18;
+                        dec_time = -1;
+                        dec_max = -1;
+                        dec_min = 1e18;
+                        rx_group_id = 0;
+                        rx_index = 0;
+                        printf("Get syncing signal!!!\n");
+                        clean_all();
+                        
+                        bytes_read = read(client_fd, tcp_buf, sizeof(tcp_buf) - 1);
+                        if (bytes_read < 0)
+                        {
+                            perror("Read failed");
+                        }
+                        else
+                        {
+                            tcp_buf[bytes_read] = '\0';
+                            printf("Syncing config: %s\n", tcp_buf);
+                            parse_config(tcp_buf, &config);
 
-                    tcp_buf[bytes_read] = '\0';
-                    printf("Syncing config: %s\n", tcp_buf);
-                    parse_config(tcp_buf, &config);
+                            printf("------------------------------------------\n");
 
-                    printf("------------------------------------------\n");
+                            char config_str[1024];
+                            serialize_config(&config, config_str);
 
-                    char config_str[1024];
-                    serialize_config(&config, config_str);
-                    printf("Synced Config: %s\n", config_str);
+                            /* Send response */
+                            const char *response = "200";
+                            write(client_fd, response, strlen(response));
+                            printf("Synced Config: %s\n", config_str);
 
-                    /* Send response */
-                    const char *response = "200";
-                    write(client_fd, response, strlen(response));
-
-                    enc = new_encoder();
+                            enc = new_encoder();
+                        }
+                    }
+                    else if (operation_type == TYPE_REQUEST_DATA)
+                    {
+                        printf("Get request data signal!!!\n");
+                        char result[1024];
+                        snprintf(result, sizeof(result), "{\"rx_rate\":%f,\"rx_count\":%llu,\"rx_total\":%llu,\"timeout_rate\":%f,\"rx_time\":%f,\"rx_min\":%f,\"rx_max\":%f}", rx_rate, rx_count, rx_total, timeout_rate, rx_time, rx_min, rx_max);
+                        write(client_fd, result, strlen(result));
+                        printf("%s\n", result);
+                    }
+                    else
+                    {
+                        printf("Unknown operation type!!!\n");
+                    }
                 }
             }
         }

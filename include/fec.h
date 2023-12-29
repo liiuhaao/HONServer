@@ -156,16 +156,17 @@ extern unsigned int rx_id;
 extern pthread_mutex_t rx_mutex;
 
 extern double rx_time;
-extern unsigned long long rx_count;
 extern double rx_min;
 extern double rx_max;
 extern unsigned long long rx_timeout;
-
+extern unsigned long long rx_count;
+extern unsigned long long rx_total;
+extern double rx_rate;
+extern double timeout_rate;
 
 extern double enc_time;
 extern double enc_min;
 extern double enc_max;
-
 
 extern double dec_time;
 extern double dec_min;

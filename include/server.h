@@ -32,7 +32,10 @@
 #define TUN_IP "10.10.0.1"
 #define MTU 2000
 #define THREAD 64
-#define QUEUE  32768
+#define QUEUE 32768
+
+#define TYPE_SYNC_CONFIG 0x01
+#define TYPE_REQUEST_DATA 0x02
 
 int allocate_tun(char *tun_name, char *tun_ip, int mtu);
 

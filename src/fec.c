@@ -10,13 +10,16 @@ unsigned int rx_num = 0;
 unsigned int rx_group_id = 0;
 unsigned int rx_index = 0;
 double rx_time = -1;
-unsigned long long rx_count = 0;
 double rx_min = 1e18;
 double rx_max = -1;
+unsigned long long rx_count = 0;
+unsigned long long rx_total = 1;
+double rx_rate = 0;
 
 unsigned long long rx_timeout = 0;
 float rolling_time = 0.9;
 pthread_mutex_t rx_mutex;
+double timeout_rate = 0;
 
 unsigned int tx_id = 0;
 pthread_mutex_t tx_mutex;
@@ -736,8 +739,11 @@ void rx_send(int tun_fd)
             rx_time += time_delta;
             rx_count += 1;
         }
+        timeout_rate = 1.0 * rx_timeout / rx_count;
+        rx_total = rx->group_id * config.data_num + rx->index + 1;
+        rx_rate = 1.0 * rx_count / rx_total;
 
-        printf("TUN %d send %d bytes. groupId=%u index=%u time_delta=%ld rx_time=%f rx_min=%f rx_max=%f timeout_rate=%f rx_rate=%f[%llu/%d]\n", tun_fd, rx->packet_len, rx->group_id, rx->index, time_delta, rx_time / rx_count, rx_min, rx_max, 1.0 * rx_timeout / rx_count, 1.0 * rx_count / (rx->group_id * config.data_num + rx->index + 1), rx_count, rx->group_id * config.data_num + rx->index + 1);
+        printf("TUN %d send %d bytes. groupId=%u index=%u time_delta=%ld rx_time=%f rx_min=%f rx_max=%f timeout_rate=%f rx_rate=%f[%llu/%llu]\n", tun_fd, rx->packet_len, rx->group_id, rx->index, time_delta, rx_time / rx_count, rx_min, rx_max, 1.0 * rx_timeout / rx_count, rx_rate, rx_count, rx_total);
         int write_bytes = write(tun_fd, rx->packet, rx->packet_len);
         if (write_bytes < 0)
         {
