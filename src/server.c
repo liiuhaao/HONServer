@@ -231,6 +231,7 @@ int main(int argc, char *argv[])
     config.encode_timeout = 1000000;
     config.decode_timeout = 1000000;
     config.rx_timeout = 100000;
+    config.mode = 0;
     enc = new_encoder();
 
     // threadpool_add(pool, (void *)monitor_encoder, (void *)&udp_fd, 0);

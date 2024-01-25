@@ -11,6 +11,7 @@ struct HONConfig
     long decode_timeout;
     long rx_timeout;
     int primary_probability;
+    int mode;
 };
 
 extern struct HONConfig config;

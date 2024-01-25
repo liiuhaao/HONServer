@@ -114,10 +114,16 @@ void *serve_input(void *args) // from server to client
     enc->packet_sizes[enc->index] = packet_size;
     input_send(udp_fd, packet, packet_size, enc->group_id, enc->index, data_udp);
 
+    /* If the mode is multiple sending, send the data packet with corresponding parity index. */
+    if (config.mode == 1)
+    {
+        input_send(udp_fd, packet, packet_size, enc->group_id, enc->index + config.data_num, parity_udp);
+    }
+
     /* If packet reaches the config.data_num, encode the packets and send them over the network*/
     if (enc->index == config.data_num - 1)
     {
-        if (config.parity_num > 0)
+        if (config.mode == 0 && config.parity_num > 0)
         {
             // printf("encode [%d/%d/%d]\n", enc->index + 1, config.data_num, config.parity_num);
             struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
@@ -204,7 +210,11 @@ void *serve_output(void *args)
     packet_sendtime = be64toh(*((long *)(packet + pos)));
     pos += 8;
 
-    if (index >= config.data_num + config.parity_num)
+    if (config.mode == 0 && index >= config.data_num + config.parity_num)
+    {
+        return NULL;
+    }
+    if (config.mode == 1 && index >= 2 * config.data_num)
     {
         return NULL;
     }
@@ -236,6 +246,12 @@ void *serve_output(void *args)
     pthread_mutex_lock(&(enc->mutex));
     enc->udp_infos = update_udp_info_list(enc->udp_infos, udp_info);
     pthread_mutex_unlock(&(enc->mutex));
+
+    /* If the mode is multiple sending, then change the index of parity packet to data packet directly */
+    if (index >= config.data_num && config.mode == 1)
+    {
+        index -= config.data_num;
+    }
 
     /* Check if the packet is received */
     if (dec->marks[index] == 1)
@@ -702,7 +718,7 @@ void rx_insert(int tun_fd, unsigned char *buf, unsigned int group_id, unsigned i
 
     pthread_mutex_unlock(&rx_mutex);
 
-    // print_rx();
+    print_rx();
 
     rx_send(tun_fd);
 }
