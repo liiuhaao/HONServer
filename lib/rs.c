@@ -965,7 +965,7 @@ int reed_solomon_reconstruct(reed_solomon* rs,
                     pn++;
                 }
             }
-
+            // printf("dn=%d pn=%d\n",dn,pn);
             if(dn == pn) {
                 reed_solomon_decode(rs
                         , data_blocks

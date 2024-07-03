@@ -303,3 +303,5 @@ static void *threadpool_thread(void *threadpool)
     pthread_exit(NULL);
     return(NULL);
 }
+
+threadpool_t *pool;

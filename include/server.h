@@ -17,24 +17,31 @@
 #include <math.h>
 #include <errno.h>
 #include <assert.h>
+#include <sys/select.h> 
 #include "../lib/rs.h"
 #include "../lib/threadpool.h"
-#include "nat.h"
 #include "fec.h"
+#include "config.h"
 
 #define SERVER_IP "0.0.0.0"
 #define SERVER_PORT 54345
+#define SYNC_PORT 34543
 
 #define INTERFACE_NAME "eth0"
 #define TUN_NAME "tun0"
 #define TUN_IP "10.10.0.1"
 #define MTU 2000
 #define THREAD 64
-#define QUEUE  32768
+#define QUEUE 32768
+
+#define TYPE_SYNC_CONFIG 0x01
+#define TYPE_REQUEST_DATA 0x02
 
 int allocate_tun(char *tun_name, char *tun_ip, int mtu);
 
 int bind_udp(char *server_ip, int server_port);
+
+int bind_tcp(char *server_ip, int server_port);
 
 void signal_handler(int sig);
 

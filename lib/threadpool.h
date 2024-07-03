@@ -94,6 +94,8 @@ int threadpool_add(threadpool_t *pool, void (*routine)(void *),
  */
 int threadpool_destroy(threadpool_t *pool, int flags);
 
+extern threadpool_t *pool;
+
 #ifdef __cplusplus
 }
 #endif
