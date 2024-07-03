@@ -214,6 +214,7 @@ int main(int argc, char *argv[])
 
     struct encoder *enc = NULL;
 
+    get_gf_table();
     fec_init();
     pthread_mutex_init(&decoder_list_mutex, NULL);
     pthread_mutex_init(&rx_mutex, NULL);
@@ -225,7 +226,7 @@ int main(int argc, char *argv[])
             THREAD, QUEUE);
 
     config.drop_rate = 0;
-    config.data_num = 5;
+    config.data_num = 8;
     config.parity_num = 0;
     config.rx_num = 100;
     config.encode_timeout = 1000000;

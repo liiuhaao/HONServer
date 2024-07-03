@@ -115,7 +115,7 @@ void *serve_input(void *args) // from server to client
     input_send(udp_fd, packet, packet_size, enc->group_id, enc->index, data_udp);
 
     /* If the mode is multiple sending, send the data packet with corresponding parity index. */
-    if (config.mode == 1)
+    if (config.mode == 2)
     {
         input_send(udp_fd, packet, packet_size, enc->group_id, enc->index + config.data_num, parity_udp);
     }
@@ -123,7 +123,7 @@ void *serve_input(void *args) // from server to client
     /* If packet reaches the config.data_num, encode the packets and send them over the network*/
     if (enc->index == config.data_num - 1)
     {
-        if (config.mode == 0 && config.parity_num > 0)
+        if ((config.mode == 0 || config.mode == 1) && config.parity_num > 0)
         {
             // printf("encode [%d/%d/%d]\n", enc->index + 1, config.data_num, config.parity_num);
             struct enc_param *enc_p = (struct enc_param *)malloc(sizeof(struct enc_param));
@@ -210,11 +210,11 @@ void *serve_output(void *args)
     packet_sendtime = be64toh(*((long *)(packet + pos)));
     pos += 8;
 
-    if (config.mode == 0 && index >= config.data_num + config.parity_num)
+    if ((config.mode == 0 || config.mode == 1) && index >= config.data_num + config.parity_num)
     {
         return NULL;
     }
-    if (config.mode == 1 && index >= 2 * config.data_num)
+    if (config.mode == 2 && index >= 2 * config.data_num)
     {
         return NULL;
     }
@@ -248,7 +248,7 @@ void *serve_output(void *args)
     pthread_mutex_unlock(&(enc->mutex));
 
     /* If the mode is multiple sending, then change the index of parity packet to data packet directly */
-    if (index >= config.data_num && config.mode == 1)
+    if (index >= config.data_num && config.mode == 2)
     {
         index -= config.data_num;
     }
@@ -377,90 +377,54 @@ void *encode(void *args)
     {
         block_size = max(block_size, (int)(enc->packet_sizes[i]));
     }
-
-    /* Construct the data blocks */
-    unsigned char arr[block_num][block_size];
-    memset(arr, 0, sizeof(arr));
-    unsigned char *data_blocks[block_num];
-
-    for (int i = 0; i < block_num; i++)
+    if (config.mode == 0)
     {
-        if (i < config.data_num)
+        unsigned char **data_packets = (unsigned char **)malloc(config.data_num * sizeof(unsigned char *));
+        for (int i = 0; i < config.data_num; i++)
         {
-            memcpy(arr[i], enc->packet_buffers[i], enc->packet_sizes[i]);
+            data_packets[i] = (unsigned char *)malloc(block_size * sizeof(unsigned char));
+            memset(data_packets[i], 0, block_size * sizeof(unsigned char));
+            memcpy(data_packets[i], enc->packet_buffers[i], enc->packet_sizes[i]);
         }
-        data_blocks[i] = arr[i];
+        block_size += (4 - block_size % 4) % 4;
+        unsigned char **parity_pacekts = fec_encode(config.data_num, config.parity_num, block_size, data_packets);
+        for (int i = 0; i < config.parity_num; i++)
+        {
+            input_send(udp_fd, parity_pacekts[i], block_size, enc->group_id, i + config.data_num, udp);
+        }
+        // free parity_packets?
+        for (int i = 0; i < config.data_num; i++)
+        {
+            free(data_packets[i]);
+        }
+        free(data_packets);
     }
-
-    // printf(">>>>>>>>>>>>>%d %d\n", config.data_num, config.parity_num);
-
-    // printf("*********************before***********************\n");
-    // for(int i=0;i<config.data_num+config.parity_num;i++){
-    //     for(int j=0;j<block_size;j++){
-    //         printf("%d ", data_blocks[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-    // printf("*********************before***********************\n");
-
-    /* Encode the data blocks */
-    reed_solomon *rs = reed_solomon_new(config.data_num, config.parity_num);
-    reed_solomon_encode2(rs, data_blocks, block_num, block_size);
-
-    // printf("*********************encoded***********************\n");
-    // for(int i=0;i<config.data_num+config.parity_num;i++){
-    //     for(int j=0;j<block_size;j++){
-    //         printf("%d ", data_blocks[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-    // printf("*********************encoded***********************\n");
-
-    // memset(arr[0],0,sizeof(arr[0]));
-    // memset(arr[1],0,sizeof(arr[1]));
-
-    // printf("*********************droped***********************\n");
-    // for(int i=0;i<config.data_num+config.parity_num;i++){
-    //     for(int j=0;j<block_size;j++){
-    //         printf("%d ", data_blocks[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-    // printf("*********************droped***********************\n");
-
-    // reed_solomon *rss = reed_solomon_new(config.data_num, config.parity_num);
-    // unsigned char marks[config.data_num + config.parity_num];
-    // for (int i = 0; i < config.data_num + config.parity_num; i++)
-    // {
-    //     marks[i] = 0;
-    // }
-    // for(int i=0;i<config.parity_num;i++){
-    //     marks[i] = 1;
-    //     memset(data_blocks[i],0,sizeof(data_blocks[i]));
-    // }
-    // if(reed_solomon_reconstruct(rss, data_blocks, marks, config.data_num + config.parity_num, block_size)){
-    //     perror("Error while decoding!!!");
-    //     return NULL;
-    // }
-
-    // printf("*********************decoded***********************\n");
-    // for(int i=0;i<config.data_num+config.parity_num;i++){
-    //     for(int j=0;j<block_size;j++){
-    //         printf("%d ", data_blocks[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-    // printf("*********************decoded***********************\n");
-
-    /* Send parity packets */
-    for (int i = config.data_num; i < block_num; i++)
+    else if (config.mode == 1)
     {
-        input_send(udp_fd, data_blocks[i], block_size, enc->group_id, i, udp);
+        /* Construct the data blocks */
+        unsigned char arr[block_num][block_size];
+        memset(arr, 0, sizeof(arr));
+        unsigned char *data_blocks[block_num];
+
+        for (int i = 0; i < block_num; i++)
+        {
+            if (i < config.data_num)
+            {
+                memcpy(arr[i], enc->packet_buffers[i], enc->packet_sizes[i]);
+            }
+            data_blocks[i] = arr[i];
+        }
+
+        /* Encode the data blocks */
+        reed_solomon *rs = reed_solomon_new(config.data_num, config.parity_num);
+        reed_solomon_encode2(rs, data_blocks, block_num, block_size);
+
+        /* Send parity packets */
+        for (int i = config.data_num; i < block_num; i++)
+        {
+            input_send(udp_fd, data_blocks[i], block_size, enc->group_id, i, udp);
+        }
     }
-    // for (int i = 0; i < config.data_num; i++)
-    // {
-    //     input_send(udp_fd, enc->packet_buffers[i], enc->packet_sizes[i], enc->group_id, i, udp);
-    // }
 
     return NULL;
 }
@@ -483,11 +447,18 @@ void *decode(void *args)
     /* Decode the data blocks if necessary */
     if (config.parity_num > 0)
     {
-        reed_solomon *rs = reed_solomon_new(config.data_num, config.parity_num);
-        if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, config.data_num + config.parity_num, dec->block_size))
+        if (config.mode == 0)
         {
-            perror("Error while decoding!!!");
-            return NULL;
+            dec->data_blocks = fec_decode(config.data_num, config.parity_num, dec->block_size, dec->data_blocks, dec->marks);
+        }
+        else if (config.mode == 1)
+        {
+            reed_solomon *rs = reed_solomon_new(config.data_num, config.parity_num);
+            if (reed_solomon_reconstruct(rs, dec->data_blocks, dec->marks, config.data_num + config.parity_num, dec->block_size))
+            {
+                perror("Error while decoding!!!");
+                return NULL;
+            }
         }
     }
 

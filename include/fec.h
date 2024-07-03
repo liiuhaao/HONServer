@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/time.h>
+#include "../lib/fec84.h"
 #include "../lib/rs.h"
 #include "config.h"
 #include "../lib/threadpool.h"

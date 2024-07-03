@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <sys/select.h> 
+#include "../lib/fec84.h"
 #include "../lib/rs.h"
 #include "../lib/threadpool.h"
 #include "fec.h"
