@@ -387,7 +387,7 @@ void *encode(void *args)
             memcpy(data_packets[i], enc->packet_buffers[i], enc->packet_sizes[i]);
         }
         block_size += (4 - block_size % 4) % 4;
-        unsigned char **parity_pacekts = fec_encode(config.data_num, config.parity_num, block_size, data_packets);
+        unsigned char **parity_pacekts = fec_encode(8, 4, block_size, data_packets);
         for (int i = 0; i < config.parity_num; i++)
         {
             input_send(udp_fd, parity_pacekts[i], block_size, enc->group_id, i + config.data_num, udp);
@@ -449,7 +449,7 @@ void *decode(void *args)
     {
         if (config.mode == 0)
         {
-            dec->data_blocks = fec_decode(config.data_num, config.parity_num, dec->block_size, dec->data_blocks, dec->marks);
+            dec->data_blocks = fec_decode(8, 4, dec->block_size, dec->data_blocks, dec->marks);
         }
         else if (config.mode == 1)
         {
@@ -544,6 +544,10 @@ struct decoder *new_decoder(unsigned int groupId)
     dec->block_size = 0;
 
     unsigned int block_num = config.data_num + config.parity_num;
+    if (config.mode == 0)
+    {
+        block_num = 12;
+    }
     dec->data_blocks = (unsigned char **)malloc(block_num * sizeof(unsigned char *));
     dec->marks = (char *)malloc(block_num * sizeof(char));
     dec->packet_sizes = (unsigned int *)malloc(block_num * sizeof(unsigned int));
