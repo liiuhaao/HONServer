@@ -56,16 +56,21 @@ void *serve_input(void *args) // from server to client
 
     free(param);
 
-    // socklen_t client_addr_len = sizeof(*udp_addr);
-    // int write_bytes = sendto(udp_fd, packet, packet_size, 0, (const struct sockaddr *)udp_addr, client_addr_len);
-    // printf("UDP %d send %d bytes to %s:%i\n", udp_fd, packet_size, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
-    // if (write_bytes < 0)
+    // if (config.mode == 3)
     // {
-    //     perror("Error while sending to udp_fd!!!");
+    //     socklen_t client_addr_len = sizeof(*udp_addr);
+    //     int write_bytes = sendto(udp_fd, packet, packet_size, 0, (const struct sockaddr *)udp_addr, client_addr_len);
+    //     printf("UDP %d send %d bytes to %s:%i\n", udp_fd, packet_size, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
+    //     if (write_bytes < 0)
+    //     {
+    //         perror("Error while sending to udp_fd!!!");
+    //     }
+    //     free(udp_addr);
+    //     free(packet);
+    //     return NULL;
     // }
-    // free(udp_addr);
-    // free(packet);
-    // return NULL;
+    // else
+    // {
 
     /* Get the target vpn address of the packet */
     struct sockaddr_in *vpn_addr = get_packet_addr(packet, INPUT);
@@ -112,12 +117,12 @@ void *serve_input(void *args) // from server to client
 
     /* Send the data packet over the network */
     enc->packet_sizes[enc->index] = packet_size;
-    input_send(udp_fd, packet, packet_size, enc->group_id, enc->index, data_udp);
+    input_send(udp_fd, packet, packet_size, enc->group_id, enc->index, DATA_TYPE, data_udp);
 
     /* If the mode is multiple sending, send the data packet with corresponding parity index. */
     if (config.mode == 2)
     {
-        input_send(udp_fd, packet, packet_size, enc->group_id, enc->index + config.data_num, parity_udp);
+        input_send(udp_fd, packet, packet_size, enc->group_id, enc->index + config.data_num, DATA_TYPE, parity_udp);
     }
 
     /* If packet reaches the config.data_num, encode the packets and send them over the network*/
@@ -166,6 +171,7 @@ void *serve_input(void *args) // from server to client
         }
     }
     pthread_mutex_unlock(&(enc->mutex));
+    // }
 }
 
 /**
@@ -193,15 +199,10 @@ void *serve_output(void *args)
 
     free(param);
 
-    // int write_bytes = write(tun_fd, packet, hon_size);
-    // if (write_bytes < 0)
-    // {
-    //     perror("Error while sending to tun_fd!!!");
-    // }
-    // return NULL;
-
     /* Parse the HON Header */
     int pos = 0;
+    unsigned int packet_type = be32toh(*((int *)(packet + pos)));
+    pos += 4;
     unsigned int group_id = be32toh(*((int *)(packet + pos)));
     pos += 4;
     unsigned int index = be32toh(*((int *)(packet + pos)));
@@ -210,11 +211,13 @@ void *serve_output(void *args)
     packet_sendtime = be64toh(*((long *)(packet + pos)));
     pos += 8;
 
+    printf("packet_type = %d, config.mode = %d  group_id=%u index=%u %d %d\n", packet_type, config.mode, group_id, index, config.data_num, config.parity_num);
     if ((config.mode == 0 || config.mode == 1) && index >= config.data_num + config.parity_num)
     {
         return NULL;
     }
-    if (config.mode == 2 && index >= 2 * config.data_num)
+    printf("!!config.mode = %d\n", config.mode);
+    if ((config.mode == 2 || config.mode == 3) && index >= 2 * config.data_num)
     {
         return NULL;
     }
@@ -248,7 +251,7 @@ void *serve_output(void *args)
     pthread_mutex_unlock(&(enc->mutex));
 
     /* If the mode is multiple sending, then change the index of parity packet to data packet directly */
-    if (index >= config.data_num && config.mode == 2)
+    if (index >= config.data_num && (config.mode == 2 || config.mode == 3))
     {
         index -= config.data_num;
     }
@@ -260,6 +263,31 @@ void *serve_output(void *args)
         dec->receive_num++;
         dec->marks[index] = 0;
 
+        /* Send Ack*/
+        if (config.mode == 3)
+        {
+            // Use parity_udp to send ack?
+            struct udp_info *data_udp = (struct udp_info *)(enc->udp_infos->data);
+            struct udp_info *parity_udp = (struct udp_info *)(enc->udp_infos->data);
+            struct list *udp_iter = enc->udp_infos;
+            while (udp_iter != NULL)
+            {
+                struct udp_info *info = (struct udp_info *)(udp_iter->data);
+                if (info->type == 1)
+                {
+                    data_udp = info;
+                }
+                if (info->type == 0)
+                {
+                    parity_udp = info;
+                }
+                udp_iter = udp_iter->next;
+            }
+
+            /* Send the data packet over the network */
+            input_send(udp_fd, packet, 0, group_id, index, ACK_TYPE, parity_udp); // Send ack (packet_type = 2)
+        }
+
         if (index >= config.data_num)
         {
             dec->block_size = dec->packet_sizes[index];
@@ -267,7 +295,6 @@ void *serve_output(void *args)
 
         if (dec->receive_num <= config.data_num)
         {
-
             /* Copy the data block to the buffer */
             dec->data_blocks[index] = (unsigned char *)malloc(dec->packet_sizes[index] * sizeof(unsigned char));
             memcpy(dec->data_blocks[index], packet + pos, dec->packet_sizes[index]);
@@ -390,7 +417,7 @@ void *encode(void *args)
         unsigned char **parity_pacekts = fec_encode(8, 4, block_size, data_packets);
         for (int i = 0; i < config.parity_num; i++)
         {
-            input_send(udp_fd, parity_pacekts[i], block_size, enc->group_id, i + config.data_num, udp);
+            input_send(udp_fd, parity_pacekts[i], block_size, enc->group_id, i + config.data_num, DATA_TYPE, udp);
         }
         // free parity_packets?
         for (int i = 0; i < config.data_num; i++)
@@ -422,7 +449,7 @@ void *encode(void *args)
         /* Send parity packets */
         for (int i = config.data_num; i < block_num; i++)
         {
-            input_send(udp_fd, data_blocks[i], block_size, enc->group_id, i, udp);
+            input_send(udp_fd, data_blocks[i], block_size, enc->group_id, i, DATA_TYPE, udp);
         }
     }
 
@@ -465,7 +492,7 @@ void *decode(void *args)
     return NULL;
 }
 
-void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_id, unsigned int index, struct udp_info *udp)
+void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_id, unsigned int index, unsigned int packet_type, struct udp_info *udp)
 {
     if (udp == NULL)
     {
@@ -473,9 +500,11 @@ void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_i
     }
     unsigned char *buffer = (unsigned char *)malloc((36 + len) * sizeof(unsigned char));
     int pos = 0;
+    printf("input_send: group_id=%d index=%d\n", group_id, index);
 
     /* Construct HON Header [group+id, index, packet_send]*/
-    *((unsigned int *)(buffer)) = htobe32(group_id), pos += 4;
+    *((unsigned int *)(buffer + pos)) = htobe32(packet_type), pos += 4;
+    *((unsigned int *)(buffer + pos)) = htobe32(group_id), pos += 4;
     *((unsigned int *)(buffer + pos)) = htobe32(index), pos += 4;
     long packet_send = ((struct time_pair *)(udp->time_head->data))->packet_send;
     struct timespec packet_receive = ((struct time_pair *)(udp->time_head->data))->packet_receive;

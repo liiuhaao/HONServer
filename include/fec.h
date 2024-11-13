@@ -31,6 +31,10 @@
 #define INPUT 1
 #define OUTPUT 0
 
+// packet_type
+#define DATA_TYPE 0
+#define ACK_TYPE 1
+
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) > (b)) ? (b) : (a))
 
@@ -182,7 +186,7 @@ extern unsigned int rx_index;
 void *serve_input(void *args);
 void *serve_output(void *args);
 
-void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_id, unsigned int index, struct udp_info *udp);
+void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_id, unsigned int index, unsigned int packet_type, struct udp_info *udp);
 
 void *encode(void *args);
 void *decode(void *args);

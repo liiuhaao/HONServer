@@ -10,6 +10,7 @@ struct HONConfig
     long encode_timeout;
     long decode_timeout;
     long rx_timeout;
+    long ack_timeout;
     int primary_probability;
     int mode;
 };
