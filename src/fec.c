@@ -211,12 +211,10 @@ void *serve_output(void *args)
     packet_sendtime = be64toh(*((long *)(packet + pos)));
     pos += 8;
 
-    printf("packet_type = %d, config.mode = %d  group_id=%u index=%u %d %d\n", packet_type, config.mode, group_id, index, config.data_num, config.parity_num);
     if ((config.mode == 0 || config.mode == 1) && index >= config.data_num + config.parity_num)
     {
         return NULL;
     }
-    printf("!!config.mode = %d\n", config.mode);
     if ((config.mode == 2 || config.mode == 3) && index >= 2 * config.data_num)
     {
         return NULL;
@@ -285,7 +283,8 @@ void *serve_output(void *args)
             }
 
             /* Send the data packet over the network */
-            input_send(udp_fd, packet, 0, group_id, index, ACK_TYPE, parity_udp); // Send ack (packet_type = 2)
+            printf("ACK: group_id=%d index=%d\n", group_id, index);
+            input_send(udp_fd, packet, 0, group_id, index, ACK_TYPE, data_udp); // Send ack (packet_type = 2)
         }
 
         if (index >= config.data_num)
