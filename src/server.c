@@ -219,6 +219,7 @@ int main(int argc, char *argv[])
     pthread_mutex_init(&decoder_list_mutex, NULL);
     pthread_mutex_init(&rx_mutex, NULL);
     pthread_mutex_init(&tx_mutex, NULL);
+    pthread_mutex_init(&ack_mutex, NULL);
 
     assert((pool = threadpool_create(THREAD, QUEUE, 0)) != NULL);
     fprintf(stderr, "Pool started with %d threads and "
@@ -231,13 +232,14 @@ int main(int argc, char *argv[])
     config.rx_num = 100;
     config.encode_timeout = 1000000;
     config.decode_timeout = 1000000;
-    config.rx_timeout = 100000;
+    config.rx_timeout = 500000;
     config.mode = 0;
     enc = new_encoder();
 
     // threadpool_add(pool, (void *)monitor_encoder, (void *)&udp_fd, 0);
     threadpool_add(pool, (void *)monitor_decoder, NULL, 0);
     threadpool_add(pool, (void *)monitor_rx, (void *)&tun_fd, 0);
+    threadpool_add(pool, (void *)monitor_ack, (void *)&udp_fd, 0);
 
     while (1)
     {
@@ -291,7 +293,7 @@ int main(int argc, char *argv[])
                         rx_index = 0;
                         printf("Get syncing signal!!!\n");
                         clean_all();
-                        
+
                         bytes_read = read(client_fd, tcp_buf, sizeof(tcp_buf) - 1);
                         if (bytes_read < 0)
                         {

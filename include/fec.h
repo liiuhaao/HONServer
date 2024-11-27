@@ -33,7 +33,7 @@
 
 // packet_type
 #define DATA_TYPE 0
-#define ACK_TYPE 1
+#define ACK_TYPE 2
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) > (b)) ? (b) : (a))
@@ -99,6 +99,17 @@ struct rx_packet
     struct timespec touch;
 };
 
+struct ack_packet
+{
+    unsigned int group_id;
+    unsigned int index;
+    unsigned char *packet;
+    unsigned int packet_len;
+
+    struct timespec touch;
+    struct encoder *enc;
+};
+
 struct input_param
 {
     pthread_t tid;
@@ -150,6 +161,12 @@ struct dec_param
     int udp_fd;
 };
 
+struct ack_param
+{
+    int udp_fd;
+    struct encoder *enc;
+};
+
 extern pthread_mutex_t decoder_list_mutex;
 extern struct list *decoder_list;
 
@@ -183,8 +200,12 @@ extern pthread_mutex_t tx_mutex;
 extern unsigned int rx_group_id;
 extern unsigned int rx_index;
 
+extern pthread_mutex_t ack_mutex;
+
 void *serve_input(void *args);
 void *serve_output(void *args);
+
+void send_ack(int udp_fd, struct encoder *enc, int group_id, int index);
 
 void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_id, unsigned int index, unsigned int packet_type, struct udp_info *udp);
 
@@ -206,7 +227,7 @@ void *monitor_decoder(void *arg);
 
 void free_decoder(struct decoder *dec);
 
-void rx_insert(int tun_fd, unsigned char *buf, unsigned int group_id, unsigned int index);
+void rx_insert(int tun_fd, int udp_fd, struct encoder *enc, unsigned char *buf, unsigned int group_id, unsigned int index);
 
 void monitor_rx(void *arg);
 
@@ -217,6 +238,14 @@ void print_udp_infos(struct list *udp_infos);
 void rx_send(int tun_fd);
 
 void print_rx();
+
+void ack_insert(unsigned char *buf, unsigned int group_id, unsigned int index, struct encoder *enc);
+
+void remove_ack(int group_id, int index);
+
+void monitor_ack(void *arg);
+
+void clean_all_ack();
 
 struct sockaddr_in *get_packet_addr(unsigned char *buf, int in_or_out);
 
