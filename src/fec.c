@@ -36,6 +36,18 @@ double dec_time = -1;
 double dec_min = 1e18;
 double dec_max = -1;
 
+pthread_mutex_t parity_status_mutex;
+pthread_t parity_reset_job = 0;
+unsigned int parity_status = 0;
+unsigned int delay_over_thres_time = 0;
+unsigned int delay_below_thres_time = 0;
+
+unsigned int data_send_pacekt_num = 0;
+unsigned int parity_send_packet_num = 0;
+unsigned int data_receive_packet_num = 0;
+unsigned int parity_receive_packet_num = 0;
+unsigned int repeat_receive_packet_num = 0;
+
 /**
  * @brief Serve incoming input packets from the TUN interface.
  *
@@ -106,14 +118,18 @@ void *serve_input(void *args) // from server to client
     /* Send the data packet over the network */
     enc->packet_sizes[enc->index] = packet_size;
     input_send(udp_fd, packet, packet_size, enc->group_id, enc->index, DATA_TYPE, data_udp);
+    data_send_pacekt_num += 1;
 
     /* If the mode is multiple sending, send the data packet with corresponding parity index. */
-    if (config.mode == 2)
+    printf("parity_status = %d\n", parity_status);
+    if (config.mode == 2 || (config.mode == 4 && parity_status))
     {
+        // printf("send parity %d %d\n", enc->group_id, enc->index);
         input_send(udp_fd, packet, packet_size, enc->group_id, enc->index + config.data_num, DATA_TYPE, parity_udp);
+        parity_send_packet_num += 1;
     }
 
-    if (config.mode == 3)
+    if (config.mode == 3 || config.mode == 4)
     {
         ack_insert(packet, enc->group_id, enc->index, enc);
     }
@@ -206,19 +222,19 @@ void *serve_output(void *args)
     {
         return NULL;
     }
-    if ((config.mode == 2 || config.mode == 3) && index >= 2 * config.data_num)
+    if ((config.mode == 2 || config.mode == 3 || config.mode == 4) && index >= 2 * config.data_num)
     {
         return NULL;
     }
 
     if (packet_type == ACK_TYPE)
     {
-        printf("ACK group_id: %d, index: %d\n", group_id, index);
-        // remove_ack(group_id, index);
+        // printf("************************ACK group_id: %d, index: %d\n", group_id, index);
+        remove_ack(group_id, index);
         return NULL;
     }
 
-    printf("OUTPUT group_id: %d, index: %d, data_num: %d, parity_num: %d, hon_size: %d , packet_sendtime: %ld udp_addr: %s:%i\n", group_id, index, config.data_num, config.parity_num, hon_size, packet_sendtime, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
+    // printf("OUTPUT group_id: %d, index: %d, data_num: %d, parity_num: %d, hon_size: %d , packet_sendtime: %ld udp_addr: %s:%i\n", group_id, index, config.data_num, config.parity_num, hon_size, packet_sendtime, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port));
 
     /* Get the decoder */
     pthread_mutex_lock(&decoder_list_mutex);
@@ -246,8 +262,17 @@ void *serve_output(void *args)
     enc->udp_infos = update_udp_info_list(enc->udp_infos, udp_info);
     pthread_mutex_unlock(&(enc->mutex));
 
+    if (index < config.data_num)
+    {
+        data_receive_packet_num += 1;
+    }
+    else
+    {
+        parity_receive_packet_num += 1;
+    }
+
     /* If the mode is multiple sending, then change the index of parity packet to data packet directly */
-    if (index >= config.data_num && (config.mode == 2 || config.mode == 3))
+    if (index >= config.data_num && (config.mode == 2 || config.mode == 3 || config.mode == 4))
     {
         index -= config.data_num;
     }
@@ -346,6 +371,10 @@ void *serve_output(void *args)
             }
         }
     }
+    else
+    {
+        repeat_receive_packet_num += 1;
+    }
     pthread_mutex_unlock(&(dec->mutex));
 
     return NULL;
@@ -409,6 +438,7 @@ void *encode(void *args)
         for (int i = 0; i < config.parity_num; i++)
         {
             input_send(udp_fd, parity_pacekts[i], block_size, enc->group_id, i + config.data_num, DATA_TYPE, udp);
+            parity_send_packet_num += 1;
         }
         // free parity_packets?
         for (int i = 0; i < config.data_num; i++)
@@ -441,6 +471,7 @@ void *encode(void *args)
         for (int i = config.data_num; i < block_num; i++)
         {
             input_send(udp_fd, data_blocks[i], block_size, enc->group_id, i, DATA_TYPE, udp);
+            parity_send_packet_num += 1;
         }
     }
 
@@ -489,7 +520,8 @@ void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_i
     {
         return;
     }
-    unsigned char *buffer = (unsigned char *)malloc((36 + len) * sizeof(unsigned char));
+
+    unsigned char *buffer = (unsigned char *)malloc((100 + len) * sizeof(unsigned char));
     int pos = 0;
 
     /* Construct HON Header [group+id, index, packet_send]*/
@@ -502,6 +534,15 @@ void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_i
     clock_gettime(CLOCK_REALTIME, &now);
     long time_delta = (now.tv_sec - packet_receive.tv_sec) * (long)1e9 + (now.tv_nsec - packet_receive.tv_nsec);
     *((long *)(buffer + pos)) = htobe64(packet_send + time_delta / 1000000), pos += 8;
+
+    *((unsigned int *)(buffer + pos)) = htobe32(data_send_pacekt_num), pos += 4;
+    *((unsigned int *)(buffer + pos)) = htobe32(parity_send_packet_num), pos += 4;
+    *((unsigned int *)(buffer + pos)) = htobe32(data_receive_packet_num), pos += 4;
+    *((unsigned int *)(buffer + pos)) = htobe32(parity_receive_packet_num), pos += 4;
+    *((unsigned int *)(buffer + pos)) = htobe32(repeat_receive_packet_num), pos += 4;
+    *((unsigned int *)(buffer + pos)) = htobe32(parity_status), pos += 4;
+    // printf("num info: data_send_pacekt_num=%d parity_send_packet_num=%d data_receive_packet_num=%d parity_receive_packet_num=%d repeat_receive_packet_num=%d\n", data_send_pacekt_num, parity_send_packet_num, data_receive_packet_num, parity_receive_packet_num, repeat_receive_packet_num);
+    // }
 
     if (udp->time_head->next != NULL)
     {
@@ -526,7 +567,7 @@ void input_send(int udp_fd, unsigned char *packet, int len, unsigned int group_i
 
     /* Send the data block over the network */
     int write_bytes = sendto(udp_fd, buffer, len + pos, 0, (const struct sockaddr *)udp_addr, udp_addr_len);
-    printf("INPUT UDP %d send %d bytes to %s:%i [%d:%d/%d/%d]\n", udp_fd, write_bytes, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port), group_id, index, config.data_num, config.data_num + config.parity_num);
+    // printf("INPUT UDP %d send %d bytes to %s:%i [%d:%d/%d/%d]\n", udp_fd, write_bytes, inet_ntoa(udp_addr->sin_addr), ntohs(udp_addr->sin_port), group_id, index, config.data_num, config.data_num + config.parity_num);
     if (write_bytes < 0)
     {
         perror("Error while sendding to udp_fd!!!");
@@ -664,7 +705,7 @@ void rx_insert(int tun_fd, int udp_fd, struct encoder *enc, unsigned char *buf, 
     }
 
     /* Send Ack*/
-    if (config.mode == 3)
+    if (config.mode == 3 || config.mode == 4)
     {
         send_ack(udp_fd, enc, group_id, index);
     }
@@ -813,17 +854,61 @@ void ack_insert(unsigned char *buf, unsigned int group_id, unsigned int index, s
     pthread_mutex_unlock(&ack_mutex);
 }
 
+void parity_status_fun(struct ack_packet *ack)
+{
+    pthread_mutex_lock(&parity_status_mutex);
+    struct timespec now_touch;
+    clock_gettime(CLOCK_REALTIME, &now_touch);
+    long delay_now = (now_touch.tv_sec - ack->touch.tv_sec) * (long)1e9 + (now_touch.tv_nsec - ack->touch.tv_nsec);
+    if (delay_now > config.parity_delay_thres * 1000000)
+    {
+        delay_over_thres_time += 1;
+        delay_below_thres_time = 0;
+    }
+    else
+    {
+        delay_below_thres_time += 1;
+        delay_over_thres_time = 0;
+    }
+    pthread_mutex_unlock(&parity_status_mutex);
+    if (delay_over_thres_time >= 2)
+    {
+        parity_status = 1;
+
+        // if (parity_reset_job)
+        // {
+        //     int random = rand();
+        //     // printf("try cancle %d ...\n", random);
+        //     pthread_cancel(parity_reset_job);
+        //     // printf("try cancle %d done\n", random);
+        //     pthread_join(parity_reset_job, NULL);
+        // }
+
+        // pthread_create(&parity_reset_job, NULL, parity_status_wait, NULL);
+    }
+    if (delay_below_thres_time >= 2)
+    {
+        parity_status = 0;
+    }
+    // printf(">>>>>ACK delay_now=%2.f  delay_over_thres_time=%d  parity_status=%d   %u:%u\n", 1.0 * delay_now / 1000000, delay_over_thres_time, parity_status, ack->group_id, ack->index);
+}
+
 void remove_ack(int group_id, int index)
 {
+    pthread_mutex_lock(&ack_mutex);
     struct list *ack_iter = ack_head;
     struct list *ack_before = NULL;
-    pthread_mutex_lock(&ack_mutex);
     while (ack_iter != NULL)
     {
         struct list *next = ack_iter->next;
         struct ack_packet *ack = (struct ack_packet *)(ack_iter->data);
         if (ack->group_id == group_id && ack->index == index)
         {
+            // printf("%u:%u\n", ack->group_id, ack->index);
+            if (config.mode == 4 && ((group_id * config.data_num + index) % 1 == 0))
+            {
+                parity_status_fun(ack);
+            }
             if (ack_before == NULL)
             {
                 ack_head = next;
@@ -851,6 +936,19 @@ void remove_ack(int group_id, int index)
     pthread_mutex_unlock(&ack_mutex);
 }
 
+void *parity_status_wait(void *arg)
+{
+    pthread_mutex_lock(&parity_status_mutex);
+    parity_status = 1;
+    pthread_mutex_unlock(&parity_status_mutex);
+    usleep(config.parity_duration * 1000);
+
+    pthread_mutex_lock(&parity_status_mutex);
+    parity_status = 0;
+    pthread_mutex_unlock(&parity_status_mutex);
+    return NULL;
+}
+
 void monitor_ack(void *arg)
 {
     int udp_fd = *((int *)arg);
@@ -865,34 +963,45 @@ void monitor_ack(void *arg)
             struct timespec now;
             clock_gettime(CLOCK_REALTIME, &now);
             long time_delta = (now.tv_sec - ack->touch.tv_sec) * (long)1e9 + (now.tv_nsec - ack->touch.tv_nsec);
+            // printf(">>>>>>time_delta=%f   ack_timeout=%f   %u:%u\n", 1.0 * time_delta / 1000000, 1.0 * config.ack_timeout / 1000000, ack->group_id, ack->index);
 
             if (time_delta < config.ack_timeout * 1000)
                 break;
 
-            // printf("ack is NULL!%d\n", ack->group_id);
-            enc = ack->enc;
-            if (enc->udp_infos == NULL)
-            {
-                break;
-            }
-            struct udp_info *data_udp = (struct udp_info *)(enc->udp_infos->data);
-            struct udp_info *parity_udp = (struct udp_info *)(enc->udp_infos->data);
-            struct list *udp_iter = enc->udp_infos;
-            while (udp_iter != NULL)
-            {
-                struct udp_info *info = (struct udp_info *)(udp_iter->data);
-                if (info->type == 1)
-                {
-                    data_udp = info;
-                }
-                if (info->type == 0)
-                {
-                    parity_udp = info;
-                }
-                udp_iter = udp_iter->next;
-            }
+            // printf("ACK TIMEOUT: group_id=%d, index=%d, delta=%ld\n", ack->group_id, ack->index, time_delta);
 
-            input_send(udp_fd, ack->packet, ack->packet_len, ack->group_id, ack->index, DATA_TYPE, data_udp);
+            // printf("ack is NULL!%d\n", ack->group_id);
+
+            if (config.mode == 3)
+            {
+                enc = ack->enc;
+                if (enc->udp_infos == NULL)
+                {
+                    break;
+                }
+                struct udp_info *data_udp = (struct udp_info *)(enc->udp_infos->data);
+                struct udp_info *parity_udp = (struct udp_info *)(enc->udp_infos->data);
+                struct list *udp_iter = enc->udp_infos;
+                while (udp_iter != NULL)
+                {
+                    struct udp_info *info = (struct udp_info *)(udp_iter->data);
+                    if (info->type == 1)
+                    {
+                        data_udp = info;
+                    }
+                    if (info->type == 0)
+                    {
+                        parity_udp = info;
+                    }
+                    udp_iter = udp_iter->next;
+                }
+                input_send(udp_fd, ack->packet, ack->packet_len, ack->group_id, ack->index, DATA_TYPE, parity_udp);
+                parity_send_packet_num += 1;
+            }
+            else if (config.mode == 4)
+            {
+                parity_status_fun(ack);
+            }
             struct list *next = ack_head->next;
             free(ack->packet);
             free(ack);

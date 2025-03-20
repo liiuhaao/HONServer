@@ -202,6 +202,15 @@ extern unsigned int rx_index;
 
 extern pthread_mutex_t ack_mutex;
 
+extern pthread_mutex_t parity_status_mutex;
+extern unsigned int delay_over_thres_time;
+
+extern unsigned int data_send_pacekt_num;
+extern unsigned int parity_send_packet_num;
+extern unsigned int data_receive_packet_num;
+extern unsigned int parity_receive_packet_num;
+extern unsigned int repeat_receive_packet_num;
+
 void *serve_input(void *args);
 void *serve_output(void *args);
 
@@ -242,6 +251,10 @@ void print_rx();
 void ack_insert(unsigned char *buf, unsigned int group_id, unsigned int index, struct encoder *enc);
 
 void remove_ack(int group_id, int index);
+
+void parity_status_fun(struct ack_packet *ack);
+
+void *parity_status_wait(void *arg);
 
 void monitor_ack(void *arg);
 

@@ -220,6 +220,7 @@ int main(int argc, char *argv[])
     pthread_mutex_init(&rx_mutex, NULL);
     pthread_mutex_init(&tx_mutex, NULL);
     pthread_mutex_init(&ack_mutex, NULL);
+    pthread_mutex_init(&parity_status_mutex, NULL);
 
     assert((pool = threadpool_create(THREAD, QUEUE, 0)) != NULL);
     fprintf(stderr, "Pool started with %d threads and "
@@ -233,6 +234,10 @@ int main(int argc, char *argv[])
     config.encode_timeout = 1000000;
     config.decode_timeout = 1000000;
     config.rx_timeout = 500000;
+    config.ack_timeout = 200000;
+    config.parity_delay_thres = 100000;
+    config.parity_duration = 1000000;
+    config.primary_probability = 0.8;
     config.mode = 0;
     enc = new_encoder();
 
@@ -291,6 +296,13 @@ int main(int argc, char *argv[])
                         dec_min = 1e18;
                         rx_group_id = 0;
                         rx_index = 0;
+
+                        data_send_pacekt_num = 0;
+                        parity_send_packet_num = 0;
+                        data_receive_packet_num = 0;
+                        parity_receive_packet_num = 0;
+                        repeat_receive_packet_num = 0;
+
                         printf("Get syncing signal!!!\n");
                         clean_all();
 
@@ -344,7 +356,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("TUN %d receive %d bytes\n", tun_fd, read_bytes);
+            // printf("TUN %d receive %d bytes\n", tun_fd, read_bytes);
 
             struct input_param *input_p = (struct input_param *)malloc(sizeof(struct input_param));
             input_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));
@@ -369,7 +381,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            printf("UDP %d receive %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
+            // printf("UDP %d receive %d bytes from %s:%i\n", udp_fd, read_bytes, inet_ntoa(udp_addr.sin_addr), ntohs(udp_addr.sin_port));
 
             struct output_param *output_p = (struct output_param *)malloc(sizeof(struct output_param));
             output_p->packet = (unsigned char *)malloc(read_bytes * sizeof(unsigned char));

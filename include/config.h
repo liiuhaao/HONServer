@@ -11,6 +11,8 @@ struct HONConfig
     long decode_timeout;
     long rx_timeout;
     long ack_timeout;
+    long parity_delay_thres;
+    long parity_duration;
     int primary_probability;
     int mode;
 };
